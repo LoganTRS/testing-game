@@ -26,7 +26,10 @@ permissions:
 
 jobs:
   route:
-    runs-on: ubuntu-latest
+    # Self-hosted runner on the Paperclip host (label: pc-paperclip) so the router
+    # can reach the private Paperclip API (http://10.69.95.194:3100). A GitHub-hosted
+    # runner cannot route to a private LAN address.
+    runs-on: pc-paperclip
     steps:
       - uses: actions/checkout@v4
         with:
