@@ -19,7 +19,8 @@ on:
   issues:
     types: [opened, labeled]
 
-# The router only reads the issue/repo (via GITHUB_TOKEN) and POSTs to Paperclip.
+# The router reads the issue/repo via the fine-grained PAT (GH_API_TOKEN, a repo
+# secret the seeder publishes) and POSTs to Paperclip. It needs no GITHUB_TOKEN.
 permissions:
   contents: read
   issues: read
@@ -38,10 +39,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      # gh is preinstalled on ubuntu-latest; point it at the runner token.
+      # Node 20 has global fetch; the router reads GitHub via the PAT repo
+      # secret (no `gh` binary required — it is not on the self-hosted runner).
       - name: Route label to Paperclip agent
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_API_TOKEN: ${{ secrets.GH_API_TOKEN }}
           PAPERCLIP_URL: ${{ vars.PAPERCLIP_URL }}
           PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
           PAPERCLIP_ROUTING_FILE: .paperclip-routing.json

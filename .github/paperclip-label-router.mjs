@@ -29,18 +29,32 @@
  *   }
  */
 
-const { execSync } = await import("node:child_process");
 const fs = await import("node:fs");
 
 function env(name, fallback = "") { return process.env[name] ?? fallback; }
 function fail(msg) { console.error(`[paperclip-label-router] ${msg}`); process.exit(1); }
 
-// --- gh helper: run `gh api` with the runner token (repo-read). ---
+// --- GitHub API helper: direct REST call with the fine-grained PAT
+// (GH_API_TOKEN). No `gh` binary — it is not installed on the self-hosted
+// runner, and the PAT reaches any repo the user has access to (unlike the
+// job-scoped GITHUB_TOKEN, which is capped to the triggering repo). The token
+// is read from the env the workflow sets and used only in the Authorization
+// header; it is never logged. ---
+const GITHUB_API = "https://api.github.com";
 function gh(apiPath) {
-  const out = execSync(`gh api ${JSON.stringify(apiPath)}`, {
-    env: process.env, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
+  const token = env("GH_API_TOKEN");
+  if (!token) throw new Error("GH_API_TOKEN not set");
+  return fetch(`${GITHUB_API}/${apiPath}`, {
+    method: "GET",
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+  }).then((res) => {
+    if (!res.ok) throw new Error(`GitHub API ${apiPath} -> ${res.status}`);
+    return res.json();
   });
-  return JSON.parse(out);
 }
 
 const url = env("PAPERCLIP_URL").replace(/\/+$/, "");
@@ -76,11 +90,11 @@ const [matchedLabel, agentId] = labelToAgentId;
 // fails we still route with just the title, the agent can fill the gap.) ---
 let github = { title: `Issue #${number}`, body: "" };
 let repoMeta = {};
-try { github = gh(`repos/${owner}/${repo}/issues/${number}`); }
+try { github = await gh(`repos/${owner}/${repo}/issues/${number}`); }
 catch (err) { console.warn(`[paperclip-label-router] could not fetch GitHub issue body: ${err.message}`); }
 try {
-  const r = gh(`repos/${owner}/${repo}`);
-  const languages = gh(`repos/${owner}/${repo}/languages`);
+  const r = await gh(`repos/${owner}/${repo}`);
+  const languages = await gh(`repos/${owner}/${repo}/languages`);
   repoMeta = { defaultBranch: r.default_branch, htmlUrl: r.html_url, languages };
 } catch (err) { console.warn(`[paperclip-label-router] could not fetch repo metadata: ${err.message}`); }
 
