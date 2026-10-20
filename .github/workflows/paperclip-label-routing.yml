@@ -1,0 +1,48 @@
+# .github/workflows/paperclip-label-routing.yml
+#
+# GitHub-side half of the label -> Paperclip-agent routing. On issue open /
+# label add, reads the issue's labels and, if a label is routed, creates the
+# Paperclip issue (idempotent), bound to the project + agent, so Paperclip
+# natively wakes the assigned agent via the `issue_assigned` wake reason.
+#
+# Requires (per-repo, seeded by the Paperclip seeder at project connect time):
+#   - .paperclip-routing.json at the repo root (companyId, projectId, label -> agent)
+#   - .github/paperclip-label-router.mjs (the router, shipped alongside this file)
+#   - repo VARIABLE PAPERCLIP_URL   (Paperclip API base -- NOT baked into this file)
+#   - repo SECRET  PAPERCLIP_API_KEY (board-level Paperclip key)
+#
+# The router gathers the GitHub issue body + repo metadata up front so the
+# assigned agent does not have to probe for them.
+name: paperclip-label-routing
+
+on:
+  issues:
+    types: [opened, labeled]
+
+# The router only reads the issue/repo (via GITHUB_TOKEN) and POSTs to Paperclip.
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # gh is preinstalled on ubuntu-latest; point it at the runner token.
+      - name: Route label to Paperclip agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PAPERCLIP_URL: ${{ vars.PAPERCLIP_URL }}
+          PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+          PAPERCLIP_ROUTING_FILE: .paperclip-routing.json
+          GH_OWNER: ${{ github.repository_owner }}
+          GH_REPO: ${{ github.event.repository.name }}
+          GH_NUMBER: ${{ github.event.issue.number }}
+          GH_LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
+        run: node .github/paperclip-label-router.mjs
