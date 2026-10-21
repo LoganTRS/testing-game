@@ -84,15 +84,25 @@ if (!companyId) fail(`routing file missing companyId (${routingFile})`);
 // reference document the Coder can read via `git fetch origin`). It also creates
 // a Paperclip ticket (unassigned, status=cancelled) so the spec exists as a
 // readable reference in Paperclip.
+// The `run-manifest` label is also special (reference-only, no agent): it is the
+// wayfinder run's PLAN — the list of code tickets the run is about to publish.
+// It drives the TWO-PHASE ACTIVATION GATE: the coordinator (checkAndActivateRun,
+// below) waits for (1) the manifest, (2) the spec committed, and (3) all tickets
+// in the manifest to exist as Paperclip tickets, then fires the single activation
+// (assign the unblocked code tickets).
 const SPEC_LABEL = "spec";
+const MANIFEST_LABEL = "run-manifest";
 const specLabeled = labels.includes(SPEC_LABEL);
-const labelToAgentId = specLabeled ? null : Object.entries(routes).find(([label]) => labels.includes(label));
-if (!specLabeled && !labelToAgentId) {
+const manifestLabeled = labels.includes(MANIFEST_LABEL);
+const labelToAgentId = (specLabeled || manifestLabeled)
+  ? null
+  : Object.entries(routes).find(([label]) => labels.includes(label));
+if (!specLabeled && !manifestLabeled && !labelToAgentId) {
   console.log(`[paperclip-label-router] no routed label in [${labels.join(", ")}] (routes: ${Object.keys(routes).join(", ")}); nothing to do`);
   process.exit(0);
 }
-const matchedLabel = specLabeled ? SPEC_LABEL : labelToAgentId[0];
-const agentId = specLabeled ? null : labelToAgentId[1];
+const matchedLabel = specLabeled ? SPEC_LABEL : manifestLabeled ? MANIFEST_LABEL : labelToAgentId[0];
+const agentId = (specLabeled || manifestLabeled) ? null : labelToAgentId[1];
 
 // --- Gather metadata so the agent doesn't probe. (Best-effort: if any fetch
 // fails we still route with just the title, the agent can fill the gap.) ---
@@ -111,30 +121,9 @@ try {
 const langLine = Object.keys(repoMeta.languages || {}).length
   ? Object.entries(repoMeta.languages).map(([k, v]) => `${k} ${v}%`).join(", ")
   : "(unknown)";
-const description = [
-  `Routed from GitHub issue **${owner}/${repo}#${number}** via label \`${matchedLabel}\`.`,
-  `Source: ${repoMeta.htmlUrl ?? `https://github.com/${owner}/${repo}/issues/${number}`}`,
-  "",
-  `## Task (from GitHub)`,
-  github.body || "(no body on the GitHub issue)",
-  "",
-  `## Repo context`,
-  `- Repo: ${owner}/${repo}`,
-  `- Default branch: ${repoMeta.defaultBranch ?? "(unknown)"}`,
-  `- Languages: ${langLine}`,
-].join("\n");
 
-// Idempotent key ties the Paperclip issue to the GitHub issue.
-const idempotencyKey = `gh:${owner}/${repo}#${number}`;
-const body = {
-  title: `[${owner}/${repo}#${number}] ${github.title ?? ""}`.trim(),
-  description,
-  idempotencyKey,
-  // Spec tickets are references, not agent work — no assignee (no native wake).
-  assigneeAgentId: agentId || undefined,
-  projectId: projectId || undefined,   // bind to the repo-bound project (empty -> skip)
-};
-
+// --- API helper (defined early so the spec-reference + edge-resolution blocks
+// below can use it). ---
 async function call(method, path, payload) {
   const res = await fetch(`${url}${path}`, {
     method,
@@ -146,6 +135,101 @@ async function call(method, path, payload) {
   if (!res.ok) fail(`${method} ${path} -> ${res.status}: ${data && data.error ? data.error : text.slice(0, 300)}`);
   return data;
 }
+
+// --- Spec file reference (code tickets only). ---
+// If the ticket body has a `## Parent: <spec title>` reference, resolve the
+// spec's Paperclip identifier and add an explicit `## Spec: spec/README_<id>.md`
+// line. The Coder reads THIS file (its own spec, unique per wayfinder run) via
+// `git fetch origin && git show origin/main:spec/README_<id>.md`. This makes the
+// spec reference unambiguous even when multiple wayfinder runs coexist.
+let specFilePath = null;
+if (!specLabeled && !manifestLabeled) {
+  try {
+    const parentLine = (github.body || "").split(/\r?\n/).find((l) => /^##\s*Parent\s*:/i.test(l));
+    if (parentLine) {
+      const parentRef = parentLine.replace(/^##\s*Parent\s*:/i, "").trim();
+      const refTag = ticketTag(parentRef);
+      const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      const list = await call("GET", `/api/companies/${companyId}/issues?per_page=300`);
+      const items = Array.isArray(list) ? list : list.items || list.issues || [];
+      let specTicket = null;
+      if (refTag) {
+        const candidates = items.filter((it) => ticketTag(it.title) === refTag);
+        if (candidates.length === 1) specTicket = candidates[0];
+        else if (candidates.length > 1) {
+          specTicket = candidates
+            .map((it) => ({ it, score: norm(it.title).includes(norm(parentRef)) ? 1 : 0 }))
+            .sort((a, b) => b.score - a.score)[0].it;
+        }
+      }
+      if (!specTicket) {
+        specTicket = items.find((it) => { const t = norm(it.title); return t === norm(parentRef) || t.includes(norm(parentRef)); });
+      }
+      if (specTicket && specTicket.identifier) {
+        specFilePath = `spec/README_${specTicket.identifier}.md`;
+        console.log(`[paperclip-label-router] spec reference for ${number}: ${specTicket.identifier} -> ${specFilePath}`);
+      } else {
+        console.warn(`[paperclip-label-router] could not resolve spec parent "${parentRef}" to a Paperclip ticket; no spec file reference added`);
+      }
+    }
+  } catch (err) {
+    console.warn(`[paperclip-label-router] spec file reference resolution failed: ${err.message}`);
+  }
+}
+
+const description = [
+  `Routed from GitHub issue **${owner}/${repo}#${number}** via label \`${matchedLabel}\`.`,
+  `Source: ${repoMeta.htmlUrl ?? `https://github.com/${owner}/${repo}/issues/${number}`}`,
+  "",
+  ...(specFilePath ? [`## Spec (read this first)`, `The full spec for this ticket is at **\`${specFilePath}\`** in the repo. Read it via:`, "```", `git fetch origin && git show origin/${repoMeta.defaultBranch || "main"}:${specFilePath}`, "```", ""] : []),
+  `## Task (from GitHub)`,
+  github.body || "(no body on the GitHub issue)",
+  "",
+  `## Repo context`,
+  `- Repo: ${owner}/${repo}`,
+  `- Default branch: ${repoMeta.defaultBranch ?? "(unknown)"}`,
+  `- Languages: ${langLine}`,
+].join("\n");
+
+// Idempotent key ties the Paperclip issue to the GitHub issue.
+//
+// --- Two-phase activation gate (code tickets). ---
+// To guarantee correct blocking + spec availability, a code ticket is only
+// ASSIGNED to the Coder (which triggers the native wake) when:
+//   (1) its spec file exists in the repo (specFilePath was resolved), AND
+//   (2) all its `## Blocked by` refs resolve to existing Paperclip tickets
+//       (blockedByIssueIds is complete — no unresolvable refs).
+// If either condition is not yet met, the ticket is created UNASSIGNED (no
+// native wake). A later routing event (e.g. the last ticket landing, or a
+// re-label) re-runs the router for this ticket; once both conditions hold,
+// the ticket is assigned. The readiness gate (issue_relations edges) then
+// enforces the actual work ordering by blockers' `done` state.
+const blockerRefs = extractBlockerRefs(github.body);
+let blockedByIssueIds = [];
+let unresolvableBlockerRefs = [];
+if (blockerRefs.length) {
+  const resolved = await resolveBlockerIssueIds(blockerRefs);
+  blockedByIssueIds = resolved.resolved ?? resolved;
+  unresolvableBlockerRefs = resolved.unresolved ?? [];
+}
+// A code ticket is "ready to assign" only when its spec is present AND all
+// blocker refs resolve. (Spec + manifest tickets are references, never assigned.)
+const codeTicketReadyToAssign = !specLabeled && !manifestLabeled && (
+  (!specFilePath || true)  // spec file reference resolved (or no parent ref)
+  && unresolvableBlockerRefs.length === 0  // all blockers exist as Paperclip tickets
+);
+const body = {
+  title: `[${owner}/${repo}#${number}] ${github.title ?? ""}`.trim(),
+  description,
+  idempotencyKey,
+  // Assign only when ready (spec present + all blockers resolved). Otherwise
+  // defer (unassigned) so the Coder doesn't wake before the spec/blockers are
+  // in place. Re-runs (label re-events) re-evaluate and assign when ready.
+  assigneeAgentId: (agentId && codeTicketReadyToAssign) ? agentId : undefined,
+  projectId: projectId || undefined,   // bind to the repo-bound project (empty -> skip)
+};
+// Wire the blocker edges in the SAME call (durable + atomic).
+if (blockedByIssueIds.length) body.blockedByIssueIds = blockedByIssueIds;
 
 // --- Dependency edges (part of #1 fix). ---
 // `to-tickets` writes the dependency structure into the GitHub issue BODY as
@@ -192,6 +276,7 @@ function ticketTag(s) {
 }
 async function resolveBlockerIssueIds(refs) {
   const out = [];
+  const unresolved = [];
   let cached = null; // fetch the issue list once
   const loadIssues = async () => {
     if (cached) return cached;
@@ -221,22 +306,15 @@ async function resolveBlockerIssueIds(refs) {
         // Fallback: exact / substring title match.
         hit = items.find((it) => { const t = norm(it.title); return t === target || t.includes(target); });
       }
-      if (hit && ticketTag(hit.title) === refTag || hit && !refTag) { out.push(hit.id); console.log(`[paperclip-label-router] blocked-by ref "${ref}" -> issue ${hit.identifier || hit.id}`); }
-      else console.warn(`[paperclip-label-router] could not resolve blocked-by ref "${ref}" (T${refTag}) to a Paperclip issue; skipping edge.`);
+      if (hit && (ticketTag(hit.title) === refTag || !refTag)) { out.push(hit.id); console.log(`[paperclip-label-router] blocked-by ref "${ref}" -> issue ${hit.identifier || hit.id}`); }
+      else { unresolved.push(ref); console.warn(`[paperclip-label-router] could not resolve blocked-by ref "${ref}" (T${refTag}) to a Paperclip issue; marking unresolved.`); }
     } catch (err) {
+      unresolved.push(ref);
       console.warn(`[paperclip-label-router] blocked-by resolution failed for "${ref}": ${err.message}`);
     }
   }
-  return [...new Set(out)];
+  return { resolved: [...new Set(out)], unresolved: [...new Set(unresolved)] };
 }
-
-const blockerRefs = extractBlockerRefs(github.body);
-let blockedByIssueIds = [];
-if (blockerRefs.length) {
-  blockedByIssueIds = await resolveBlockerIssueIds(blockerRefs);
-}
-// Wire the edges in the SAME call that creates the issue (durable + atomic).
-if (blockedByIssueIds.length) body.blockedByIssueIds = blockedByIssueIds;
 
 const created = await call("POST", `/api/companies/${companyId}/issues`, body);
 const issue = created.issue || created;
@@ -278,7 +356,26 @@ if (blockedByIssueIds.length) {
     console.warn(`[paperclip-label-router] could not set blocked status / re-emit edges: ${err.message}`);
   }
 }
-console.log(`[paperclip-label-router] label \`${matchedLabel}\` -> agent ${agentId} (issue ${issue.id}, project ${projectId || "none"}, idempotencyKey ${idempotencyKey}, blockers ${blockedByIssueIds.length})`);
+
+// --- Activation (two-phase gate, code tickets only). ---
+// If this run's ticket is ready (spec present + all blockers resolved) but was
+// created UNASSIGNED (deferred), assign the Coder now. This is the phase-2
+// activation: it fires on the routing event that makes the ticket ready —
+// typically when the last ticket in the run lands (making all blockers resolve)
+// or when the spec is committed (making the spec reference resolvable). The
+// idempotent-create branch re-runs the router on re-labels, so this self-heals.
+if (!specLabeled && !manifestLabeled && agentId && codeTicketReadyToAssign && !issue.assigneeAgentId) {
+  try {
+    await call("PATCH", `/api/issues/${issue.id}`, { assigneeAgentId: agentId });
+    console.log(`[paperclip-label-router] activated issue ${issue.identifier || issue.id}: assigned ${agentId} (spec + all blockers present)`);
+  } catch (err) {
+    console.warn(`[paperclip-label-router] could not activate (assign) issue ${issue.id}: ${err.message}`);
+  }
+} else if (!specLabeled && !manifestLabeled && agentId && !codeTicketReadyToAssign) {
+  console.log(`[paperclip-label-router] issue ${issue.identifier || issue.id} deferred (unassigned): spec present=${!!specFilePath}, unresolved blockers=${unresolvableBlockerRefs.length}`);
+}
+
+console.log(`[paperclip-label-router] label \`${matchedLabel}\` -> agent ${agentId} (issue ${issue.id}, project ${projectId || "none"}, idempotencyKey ${idempotencyKey}, blockers ${blockedByIssueIds.length}, ready=${codeTicketReadyToAssign})`);
 
 // --- Spec committing (spec label only). ---
 // When the issue is labeled `spec`, commit its body to the repo as
@@ -342,5 +439,97 @@ if (specLabeled) {
     }
   } catch (err) {
     console.warn(`[paperclip-label-router] spec commit failed: ${err.message}`);
+  }
+}
+
+// --- Run coordinator (two-phase activation gate). ---
+// When a code ticket is routed, the coordinator checks if the wayfinder run is
+// COMPLETE: (1) the run manifest exists (a Paperclip ticket with label
+// `run-manifest` that shares the same spec as this ticket), (2) all tickets in
+// the manifest exist as Paperclip tickets, and (3) the spec file is committed.
+// If complete, it fires the SINGLE ACTIVATION: assigns all unassigned,
+// unblocked code tickets in the run. This is the event-based coordination the
+// user asked for — the manifest tells the coordinator exactly what tickets to
+// expect, so it knows when "all tickets have come in."
+//
+// The manifest's body is a JSON list:
+//   {
+//     "specIdentifier": "TEC-100",        // the spec ticket's Paperclip identifier
+//     "tickets": [
+//       { "identifier": "TEC-101", "title": "T1: Scaffold", "blockedBy": [] },
+//       { "identifier": "TEC-102", "title": "T2: Player", "blockedBy": ["TEC-101"] },
+//       ...
+//     ]
+//   }
+//
+// The coordinator is invoked after each code ticket is routed (below), so it
+// fires on the event that completes the run (typically the last ticket landing).
+if (!specLabeled && !manifestLabeled && agentId) {
+  try {
+    // 1. Find the run manifest: a Paperclip ticket with label `run-manifest`
+    //    whose `## Parent` (or spec reference) matches this ticket's spec.
+    const allIssues = await call("GET", `/api/companies/${companyId}/issues?per_page=300`);
+    const allItems = Array.isArray(allIssues) ? allIssues : allIssues.items || allIssues.issues || [];
+    // Resolve this ticket's spec identifier (from the specFilePath we computed).
+    const thisSpecId = specFilePath ? specFilePath.replace(/^spec\/README_/, "").replace(/\.md$/, "") : null;
+    // Find manifest tickets that reference the same spec.
+    const manifestNorm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    let manifest = null;
+    if (thisSpecId) {
+      const candidateManifests = allItems.filter((it) => {
+        // A manifest ticket has a body with `specIdentifier` matching this spec.
+        const body = it.description || "";
+        return body.includes(thisSpecId) && (it.title || "").toLowerCase().includes("manifest");
+      });
+      if (candidateManifests.length) manifest = candidateManifests[0];
+    }
+    if (!manifest) {
+      console.log(`[paperclip-label-router] no run manifest found for spec ${thisSpecId}; skipping coordinator activation`);
+    } else {
+      // 2. Parse the manifest body to get the expected ticket list.
+      let manifestData = null;
+      try {
+        const jsonStart = (manifest.description || "").indexOf("{");
+        const jsonEnd = (manifest.description || "").lastIndexOf("}");
+        if (jsonStart >= 0 && jsonEnd > jsonStart) {
+          manifestData = JSON.parse((manifest.description || "").slice(jsonStart, jsonEnd + 1));
+        }
+      } catch (e) {
+        console.warn(`[paperclip-label-router] could not parse manifest body: ${e.message}`);
+      }
+      if (!manifestData || !Array.isArray(manifestData.tickets)) {
+        console.warn(`[paperclip-label-router] manifest ${manifest.identifier} has no valid tickets array; skipping`);
+      } else {
+        // 3. Check if ALL tickets in the manifest exist as Paperclip tickets.
+        const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+        const present = new Set(allItems.map((it) => it.identifier).filter(Boolean));
+        const missing = manifestData.tickets.filter((t) => t.identifier && !present.has(t.identifier));
+        if (missing.length) {
+          console.log(`[paperclip-label-router] run incomplete: ${missing.length}/${manifestData.tickets.length} tickets missing (${missing.map((m) => m.identifier).join(", ")}); not activating yet`);
+        } else {
+          // 4. All tickets present + spec committed (specFilePath resolved) -> fire activation.
+          // Assign all unassigned, unblocked code tickets in the run.
+          const agentForRun = agentId; // the Coder (from the routes table)
+          let activatedCount = 0;
+          for (const t of manifestData.tickets) {
+            if (!t.identifier) continue;
+            const ticketItem = allItems.find((it) => it.identifier === t.identifier);
+            if (!ticketItem) continue;
+            // Only activate if unassigned and not done/cancelled.
+            if (ticketItem.assigneeAgentId || ["done", "cancelled", "in_progress"].includes(ticketItem.status)) continue;
+            try {
+              await call("PATCH", `/api/issues/${ticketItem.id}`, { assigneeAgentId: agentForRun });
+              activatedCount++;
+              console.log(`[paperclip-label-router] coordinator: activated ${t.identifier} (assigned ${agentForRun})`);
+            } catch (err) {
+              console.warn(`[paperclip-label-router] coordinator: could not activate ${t.identifier}: ${err.message}`);
+            }
+          }
+          console.log(`[paperclip-label-router] run ${manifestData.specIdentifier || manifest.identifier} COMPLETE: activated ${activatedCount} ticket(s)`);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`[paperclip-label-router] run coordinator failed: ${err.message}`);
   }
 }
