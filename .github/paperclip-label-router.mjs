@@ -79,12 +79,20 @@ const routes = routing.routes || {};
 if (!companyId) fail(`routing file missing companyId (${routingFile})`);
 
 // First GitHub label that has a mapped agent.
-const labelToAgentId = Object.entries(routes).find(([label]) => labels.includes(label));
-if (!labelToAgentId) {
+// The `spec` label is special: it does NOT map to an agent. Instead, the router
+// commits the issue body to the repo as `spec/README_<identifier>.md` (a
+// reference document the Coder can read via `git fetch origin`). It also creates
+// a Paperclip ticket (unassigned, status=cancelled) so the spec exists as a
+// readable reference in Paperclip.
+const SPEC_LABEL = "spec";
+const specLabeled = labels.includes(SPEC_LABEL);
+const labelToAgentId = specLabeled ? null : Object.entries(routes).find(([label]) => labels.includes(label));
+if (!specLabeled && !labelToAgentId) {
   console.log(`[paperclip-label-router] no routed label in [${labels.join(", ")}] (routes: ${Object.keys(routes).join(", ")}); nothing to do`);
   process.exit(0);
 }
-const [matchedLabel, agentId] = labelToAgentId;
+const matchedLabel = specLabeled ? SPEC_LABEL : labelToAgentId[0];
+const agentId = specLabeled ? null : labelToAgentId[1];
 
 // --- Gather metadata so the agent doesn't probe. (Best-effort: if any fetch
 // fails we still route with just the title, the agent can fill the gap.) ---
@@ -122,7 +130,8 @@ const body = {
   title: `[${owner}/${repo}#${number}] ${github.title ?? ""}`.trim(),
   description,
   idempotencyKey,
-  assigneeAgentId: agentId,      // assign on create -> native issue_assigned wake
+  // Spec tickets are references, not agent work — no assignee (no native wake).
+  assigneeAgentId: agentId || undefined,
   projectId: projectId || undefined,   // bind to the repo-bound project (empty -> skip)
 };
 
@@ -233,18 +242,105 @@ const created = await call("POST", `/api/companies/${companyId}/issues`, body);
 const issue = created.issue || created;
 
 // If blockers exist and the ticket was created not-`blocked`, set it now so the
-// dispatcher respects the dependency (a follow-up PATCH only if the create
-// call didn't take the status field). This makes the ticket wait for its
-// blockers instead of racing the batch.
+// dispatcher respects the dependency. TWO things must be true for the dependency
+// to actually gate the launch:
+//   (1) `issue_relations` `type='blocks'` rows exist for the dependent's
+//       blockers (the readiness check `listIssueDependencyReadinessMap` reads
+//       these, NOT the `blocked` status). The create call's `blockedByIssueIds`
+//       is the primary path, but the idempotent-create branch can drop it, so
+//       we re-emit it here in the PATCH too. `syncBlockedByIssueIds` (issues.ts)
+//       deletes + re-inserts the `issue_relations` rows, so this is idempotent
+//       and self-healing even when the create call already wrote them.
+//   (2) the dependent is ASSIGNED (`assigneeAgentId`), so it gets the native
+//       `issue_assigned` wake. `shouldAutoCheckoutIssueForWake` (heartbeat.ts)
+//       returns false when the assignee doesn't match the waking agent — an
+//       unassigned ticket has no native wake path and relies on manual
+//       dispatch, which bypasses the readiness gate (this is the bug that
+//       caused the T1–T13 parallel fan-out: the tickets were created
+//       unassigned, so the not-ready gate was never reached).
+// The `blocked` status is set for board visibility (a human sees the ticket
+// waiting on its blockers) but is NOT the gate — the gate is (1)+(2).
 if (blockedByIssueIds.length) {
   try {
     const cur = issue.status;
+    const patch = { status: "blocked", blockedByIssueIds };
     if (cur !== "blocked" && cur !== "done" && cur !== "cancelled") {
-      await call("PATCH", `/api/issues/${issue.id}`, { status: "blocked" });
-      console.log(`[paperclip-label-router] set issue ${issue.identifier || issue.id} to blocked (blockers: ${blockedByIssueIds.length})`);
+      await call("PATCH", `/api/issues/${issue.id}`, patch);
+      console.log(`[paperclip-label-router] set issue ${issue.identifier || issue.id} to blocked + re-emitted ${blockedByIssueIds.length} blocker edge(s)`);
+    } else {
+      // Ticket is already in a terminal/ready state; still re-emit the edges
+      // so a future re-activation (e.g. an operator PATCHing back to `todo`)
+      // finds the dependency already wired.
+      await call("PATCH", `/api/issues/${issue.id}`, { blockedByIssueIds });
+      console.log(`[paperclip-label-router] re-emitted ${blockedByIssueIds.length} blocker edge(s) for ${issue.identifier || issue.id} (status ${cur}, no status change)`);
     }
   } catch (err) {
-    console.warn(`[paperclip-label-router] could not set blocked status: ${err.message}`);
+    console.warn(`[paperclip-label-router] could not set blocked status / re-emit edges: ${err.message}`);
   }
 }
 console.log(`[paperclip-label-router] label \`${matchedLabel}\` -> agent ${agentId} (issue ${issue.id}, project ${projectId || "none"}, idempotencyKey ${idempotencyKey}, blockers ${blockedByIssueIds.length})`);
+
+// --- Spec committing (spec label only). ---
+// When the issue is labeled `spec`, commit its body to the repo as
+// `spec/README_<identifier>.md` (a reference document the Coder reads via
+// `git fetch origin`). The Paperclip ticket is already created above (unassigned,
+// cancelled) so the spec exists as a readable reference in Paperclip.
+if (specLabeled) {
+  const identifier = issue.identifier || `GH-${number}`;
+  const specPath = `spec/README_${identifier}.md`;
+  try {
+    // Build the spec file content: a header + the full GitHub issue body.
+    const specContent = [
+      `# ${issue.title || github.title || `Spec #${number}`}`,
+      ``,
+      `> Routed from GitHub issue **${owner}/${repo}#${number}** (label \`spec\`).`,
+      `> Paperclip reference: ${issue.identifier || "n/a"} (id ${issue.id}).`,
+      `> Source: ${repoMeta.htmlUrl ?? `https://github.com/${owner}/${repo}/issues/${number}`}`,
+      ``,
+      `---`,
+      ``,
+      github.body || "(no body on the GitHub issue)",
+      ``,
+    ].join("\n");
+    // Base64-encode the content for the GitHub API.
+    const contentB64 = Buffer.from(specContent, "utf8").toString("base64");
+    // Try to create or update the file via the GitHub API.
+    let sha = null;
+    try {
+      // GET the file to check if it exists (for update).
+      const existing = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/contents/${specPath}?ref=${repoMeta.defaultBranch || "main"}`, {
+        headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${env("GH_API_TOKEN")}`, "X-GitHub-Api-Version": "2022-11-28" },
+      }).then((r) => (r.ok ? r.json() : null));
+      sha = existing?.sha ?? null;
+    } catch { /* file doesn't exist yet */ }
+    const commitMsg = `paperclip: commit spec ${identifier} (from GitHub issue #${number})`;
+    const payload = {
+      message: commitMsg,
+      content: contentB64,
+      branch: repoMeta.defaultBranch || "main",
+      ...(sha ? { sha } : {}),
+    };
+    const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/contents/${specPath}`, {
+      method: "PUT",
+      headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${env("GH_API_TOKEN")}`, "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      console.warn(`[paperclip-label-router] could not commit spec to ${specPath}: ${res.status} ${errText.slice(0, 200)}`);
+    } else {
+      console.log(`[paperclip-label-router] committed spec to ${specPath} on ${repoMeta.defaultBranch || "main"}`);
+    }
+    // Mark the Paperclip ticket as cancelled (reference only, not agent work).
+    if (issue.status !== "cancelled" && issue.status !== "done") {
+      try {
+        await call("PATCH", `/api/issues/${issue.id}`, { status: "cancelled" });
+        console.log(`[paperclip-label-router] set spec ticket ${issue.identifier || issue.id} to cancelled (reference only)`);
+      } catch (err) {
+        console.warn(`[paperclip-label-router] could not set spec ticket to cancelled: ${err.message}`);
+      }
+    }
+  } catch (err) {
+    console.warn(`[paperclip-label-router] spec commit failed: ${err.message}`);
+  }
+}

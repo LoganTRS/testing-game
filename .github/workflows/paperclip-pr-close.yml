@@ -1,0 +1,47 @@
+# .github/workflows/paperclip-pr-close.yml
+#
+# GitHub-side half: when a PR is closed (merged or discarded), mark the
+# corresponding Paperclip ticket as `done`. The PR body must reference the
+# Paperclip ticket via a `Paperclip-Ticket: <identifier>` line (e.g.
+# `Paperclip-Ticket: TEC-101`). The workflow reads the PR body, extracts the
+# identifier, and PATCHes the Paperclip ticket to `done`.
+#
+# Requires (per-repo, seeded by the Paperclip seeder):
+#   - .paperclip-routing.json at the repo root (companyId, projectId)
+#   - repo VARIABLE PAPERCLIP_URL   (Paperclip API base)
+#   - repo SECRET  PAPERCLIP_API_KEY (board-level Paperclip key)
+#
+# The workflow uses the job-scoped GITHUB_TOKEN (no `gh` binary, no fine-grained
+# PAT needed - it only reads the PR body via the GitHub API, which the
+# job-scoped token can do on its own repo).
+name: paperclip-pr-close
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  close-ticket:
+    runs-on: pc-paperclip
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Mark Paperclip ticket done
+        env:
+          PAPERCLIP_URL: ${{ vars.PAPERCLIP_URL }}
+          PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+          PAPERCLIP_ROUTING_FILE: .paperclip-routing.json
+          GH_OWNER: ${{ github.repository_owner }}
+          GH_REPO: ${{ github.event.repository.name }}
+          GH_PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_PR_BODY: ${{ github.event.pull_request.body }}
+          GH_PR_MERGED: ${{ github.event.pull_request.merged }}
+        run: node .github/paperclip-pr-close.mjs
