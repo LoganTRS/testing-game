@@ -138,6 +138,113 @@ async function call(method, path, payload) {
   return data;
 }
 
+// --- Dependency edges (part of #1 fix). ---
+// `to-tickets` writes the dependency structure into the GitHub issue BODY as
+// prose: a `## Parent: <title>` line and/or `## Blocked by:` section listing
+// sibling ticket titles (e.g. "T1: Scaffold"). This mirror flips GitHub issues
+// into Paperclip issues, so if we don't parse those sections into native
+// `blockedByIssueIds`, the dispatcher sees N independent ready tickets and
+// launches the whole batch in parallel (including the final-integration
+// ticket before the scaffold exists). Resolve each referenced ticket to a
+// Paperclip issue id by title match and wire the edges in the SAME create
+// call, so they are durable for every future repo / re-run.
+function extractBlockerRefs(body) {
+  if (!body) return [];
+  const refs = new Set();
+  const lines = body.split(/\r?\n/);
+  // `## Parent: T0: Spec` — a single referenced parent.
+  const parent = lines.find((l) => /^##\s*Parent\s*:/i.test(l));
+  if (parent) {
+    const ref = parent.replace(/^##\s*Parent\s*:/i, "").trim();
+    if (ref) refs.add(ref);
+  }
+  // `## Blocked by:` followed by bullet lines `- T1: Scaffold`.
+  let inBlocked = false;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (/^##\s*Blocked by\s*:?\s*$/i.test(line) || /^##\s*Blocked by\s*:/i.test(line)) { inBlocked = true; continue; }
+    if (inBlocked) {
+      if (/^##\s/.test(line)) { inBlocked = false; continue; } // next section
+      const bullet = line.replace(/^[-*+]\s*/, "").trim();
+      if (bullet && !/^##\s/.test(bullet)) refs.add(bullet);
+    }
+  }
+  return [...refs];
+}
+// Resolve a prose ticket title to a Paperclip issue id. `to-tickets` numbers
+// its tickets T1..Tn and the mirror keeps that `T<n>:` tag in the mirrored
+// title, so the tag is the stable key — the ref may carry a descriptive suffix
+// ("T1: Scaffold (game loop + Game class...)") that must not break the match.
+// Best-effort: an unresolvable ref is logged and skipped (we never fail the
+// routing over a missing edge).
+function ticketTag(s) {
+  const m = String(s || "").match(/\bT(\d+)\b/i);
+  return m ? m[1] : null;
+}
+async function resolveBlockerIssueIds(refs) {
+  const out = [];
+  let cached = null; // fetch the issue list once
+  const loadIssues = async () => {
+    if (cached) return cached;
+    const list = await call("GET", `/api/companies/${companyId}/issues?per_page=300`);
+    const items = Array.isArray(list) ? list : list.items || list.issues || [];
+    cached = items;
+    return items;
+  };
+  const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  for (const ref of refs) {
+    try {
+      const items = await loadIssues();
+      const refTag = ticketTag(ref);
+      const target = norm(ref);
+      let hit = null;
+      if (refTag) {
+        // Strongest signal: same T<n> tag, then closest title overlap.
+        const candidates = items.filter((it) => ticketTag(it.title) === refTag);
+        if (candidates.length === 1) hit = candidates[0];
+        else if (candidates.length > 1) {
+          hit = candidates
+            .map((it) => ({ it, score: target === norm(it.title) ? 2 : norm(it.title).includes(target) || target.includes(norm(it.title)) ? 1 : 0 }))
+            .sort((a, b) => b.score - a.score)[0].it;
+        }
+      }
+      if (!hit) {
+        // Fallback: exact / substring title match.
+        hit = items.find((it) => { const t = norm(it.title); return t === target || t.includes(target); });
+      }
+      if (hit && ticketTag(hit.title) === refTag || hit && !refTag) { out.push(hit.id); console.log(`[paperclip-label-router] blocked-by ref "${ref}" -> issue ${hit.identifier || hit.id}`); }
+      else console.warn(`[paperclip-label-router] could not resolve blocked-by ref "${ref}" (T${refTag}) to a Paperclip issue; skipping edge.`);
+    } catch (err) {
+      console.warn(`[paperclip-label-router] blocked-by resolution failed for "${ref}": ${err.message}`);
+    }
+  }
+  return [...new Set(out)];
+}
+
+const blockerRefs = extractBlockerRefs(github.body);
+let blockedByIssueIds = [];
+if (blockerRefs.length) {
+  blockedByIssueIds = await resolveBlockerIssueIds(blockerRefs);
+}
+// Wire the edges in the SAME call that creates the issue (durable + atomic).
+if (blockedByIssueIds.length) body.blockedByIssueIds = blockedByIssueIds;
+
 const created = await call("POST", `/api/companies/${companyId}/issues`, body);
 const issue = created.issue || created;
-console.log(`[paperclip-label-router] label \`${matchedLabel}\` -> agent ${agentId} (issue ${issue.id}, project ${projectId || "none"}, idempotencyKey ${idempotencyKey})`);
+
+// If blockers exist and the ticket was created not-`blocked`, set it now so the
+// dispatcher respects the dependency (a follow-up PATCH only if the create
+// call didn't take the status field). This makes the ticket wait for its
+// blockers instead of racing the batch.
+if (blockedByIssueIds.length) {
+  try {
+    const cur = issue.status;
+    if (cur !== "blocked" && cur !== "done" && cur !== "cancelled") {
+      await call("PATCH", `/api/issues/${issue.id}`, { status: "blocked" });
+      console.log(`[paperclip-label-router] set issue ${issue.identifier || issue.id} to blocked (blockers: ${blockedByIssueIds.length})`);
+    }
+  } catch (err) {
+    console.warn(`[paperclip-label-router] could not set blocked status: ${err.message}`);
+  }
+}
+console.log(`[paperclip-label-router] label \`${matchedLabel}\` -> agent ${agentId} (issue ${issue.id}, project ${projectId || "none"}, idempotencyKey ${idempotencyKey}, blockers ${blockedByIssueIds.length})`);
