@@ -181,7 +181,11 @@ function extractBlockerRefs(body) {
     if (inBlocked) {
       if (/^##\s/.test(line)) { inBlocked = false; continue; } // next section
       const bullet = line.replace(/^[-*+]\s*/, "").trim();
-      if (bullet && !/^##\s/.test(bullet)) refs.add(bullet);
+      // Skip empty bullets and "none"-style markers (e.g. "(no blockers)",
+      // "None", "none (can start immediately)") — these mean no blockers.
+      if (!bullet || /^##\s/.test(bullet)) continue;
+      if (/^[(]?no(ne|\s+blockers|thing)[)]?$/i.test(bullet)) continue;
+      refs.add(bullet);
     }
   }
   return [...refs];
