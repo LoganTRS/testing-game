@@ -495,25 +495,42 @@ if (groupLabeled) {
     }
   }
 
-  // 7. Assign the FIRST WAVE: tickets with NO blockers (or whose blockers are
-  //    all already `done`). The readiness gate then sequences the rest by the
-  //    blockers' done state. A ticket with no `## Blocked by` refs is in wave 1.
+  // 7. Assign EVERY ticket to the group agent up front (Option A).
+  //    - Wave 1 (no blockers): assign + `todo` -> the run starts immediately.
+  //    - Downstream (has blockers): assign + keep `blocked`. Being assigned
+  //      while blocked is the key: the `issue_graph_liveness_backstop`
+  //      (recovery/service.ts) only sweeps blocked issues whose
+  //      `assigneeAgentId IS NOT NULL`, so once a blocker flips to `done`
+  //      the backstop assigns-and-wakes the dependent (readiness gate).
+  //    Without the assign step here, wave-2+ tickets sit unassigned+blocked
+  //      and are invisible to BOTH the synchronous blockers_resolved eval and
+  //      the backstop -> they stall until a human assigns them.
   let wave1Count = 0;
+  let wave2Count = 0;
   for (const { gh: t, issue } of createdIssues) {
+    // Skip tickets already in a terminal/active state or already assigned to
+    // someone else (idempotent re-runs of the coordinator).
+    if (["done", "cancelled", "in_progress"].includes(issue.status)) continue;
     const refs = extractBlockerRefs(t.body);
     const hasBlockers = refs.length > 0;
-    // Skip tickets already assigned or in a terminal/active state.
-    if (issue.assigneeAgentId || ["done", "cancelled", "in_progress"].includes(issue.status)) continue;
-    if (!hasBlockers) {
-      try {
-        await call("PATCH", `/api/issues/${issue.id}`, { assigneeAgentId: groupAgentId, status: "todo" });
-        wave1Count++;
-        console.log(`[paperclip-label-router] wave 1: assigned ${issue.identifier || issue.id} -> ${groupAgentId} (no blockers)`);
-      } catch (err) {
-        console.warn(`[paperclip-label-router] could not assign ${issue.id} to wave 1: ${err.message}`);
+    const targetStatus = hasBlockers ? "blocked" : "todo";
+    try {
+      const existingAssignee = issue.assigneeAgentId;
+      const alreadyUs = existingAssignee === groupAgentId;
+      if (!alreadyUs) {
+        await call("PATCH", `/api/issues/${issue.id}`, { assigneeAgentId: groupAgentId, status: targetStatus });
       }
+      if (!hasBlockers) {
+        wave1Count++;
+        console.log(`[paperclip-label-router] wave 1: assigned ${issue.identifier || issue.id} -> ${groupAgentId} (no blockers, todo)`);
+      } else {
+        wave2Count++;
+        console.log(`[paperclip-label-router] wave 2+: assigned ${issue.identifier || issue.id} -> ${groupAgentId} (blocked, waiting on blockers; backstop will wake it)`);
+      }
+    } catch (err) {
+      console.warn(`[paperclip-label-router] could not assign ${issue.id}: ${err.message}`);
     }
   }
-  console.log(`[paperclip-label-router] coordinator DONE: run "${specIdentifier || groupParentRef}", ${createdIssues.length} ticket(s) created, ${wave1Count} in wave 1 (assigned ${groupAgentId}). The readiness gate sequences the rest.`);
+  console.log(`[paperclip-label-router] coordinator DONE: run "${specIdentifier || groupParentRef}", ${createdIssues.length} ticket(s) created, ${wave1Count} in wave 1 (todo) + ${wave2Count} downstream (assigned+blocked). All assigned to ${groupAgentId}; the backstop sequences the rest as blockers complete.`);
   process.exit(0);
 }
