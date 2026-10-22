@@ -60,6 +60,24 @@ ZOMBIE = {
     },
 }
 
+# --- Spawning (T9: continuous rate, super-linear ramp, 1000-cap, type-mix shift) ---
+# Rate curve: rate(t) = base + ramp * (t / duration) ** exponent, in zombies/second.
+# exponent > 1 makes the ramp slightly super-linear. The rate flattens once the
+# live zombie count reaches max_count (hard cap).
+# Mix weights: weight of each type at time t is
+#   w(t) = base + peak * exp(-((t - peak_time) / width) ** 2)
+# normalized over the three types. Tuned at the 3-run sign-off.
+SPAWN = {
+    "base_rate": 0.5,
+    "ramp_rate": 1.5,
+    "exponent": 1.5,
+    "mix": {
+        "walker": {"base": 0.1, "peak": 0.9, "peak_time": 0.0, "width": 300.0},
+        "runner": {"base": 0.0, "peak": 0.9, "peak_time": 600.0, "width": 120.0},
+        "brute": {"base": 0.0, "peak": 0.9, "peak_time": 1200.0, "width": 120.0},
+    },
+}
+
 # --- Weapons ---
 # Every weapon has a `type` field the weapon module dispatches on:
 #   projectile — straight bullet (pistol)
