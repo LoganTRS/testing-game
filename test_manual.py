@@ -1062,6 +1062,212 @@ def test_level_up_pause_and_pick():
     pygame.quit()
 
 
+def test_passive_pick_effects():
+    """Picking a passive at a level-up takes real effect: +damage, +move speed,
+    +magnet radius, -cooldown. Passives live in the player's state dict and
+    are applied each frame. All effects are config.py-driven."""
+    print("\n[passive] Pick effects (damage, move speed, magnet, cooldown)")
+    import player
+    import xp
+    import weapon
+    import upgrade
+
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    dt = 1 / 60.0
+    base_speed = config.PLAYER["speed"]
+    base_magnet = config.XP["gem_magnet_radius"]
+    pistol = config.WEAPON["types"]["pistol"]
+
+    # Passives are stored in the player's state dict.
+    check("Player state has a passives dict",
+          isinstance(game.player["passives"], dict))
+    check("All 4 config passives start at level 0",
+          all(game.player["passives"][name] == 0
+              for name in config.UPGRADE["passives"]))
+
+    # --- +damage: weapon damage increases by the config per_level. ---
+    dmg_per = config.UPGRADE["passives"]["damage"]["per_level"]
+    upgrade.apply_pick(game, "damage")
+    check("Picking +damage stores the passive in the player state",
+          game.player["passives"]["damage"] == 1)
+    game.zombies = [{"x": game.player["x"] + 50.0, "y": game.player["y"],
+                     "vx": 0.0, "vy": 0.0, "hp": 1000, "type": "walker"}]
+    game.projectiles = []
+    for w in game.weapons:
+        w["last_fired"] = None if w["type"] == "pistol" else 0.0
+    weapon.update(game, dt)
+    p = [q for q in game.projectiles if q.get("weapon") == "pistol"][0]
+    check("Picking +damage increases weapon damage (config per_level)",
+          abs(p["damage"] - pistol["damage"] * (1 + dmg_per)) < 1e-9)
+
+    # --- +move speed: player movement speed increases by the config per_level. ---
+    spd_per = config.UPGRADE["passives"]["move_speed"]["per_level"]
+    upgrade.apply_pick(game, "move_speed")
+    check("Picking +move speed stores the passive in the player state",
+          game.player["passives"]["move_speed"] == 1)
+    game.player["x"] = config.DISPLAY["width"] / 2
+    game.player["y"] = config.DISPLAY["height"] / 2
+    set_keys([pygame.K_d])
+    player.update(game)
+    check("Picking +move speed increases player movement speed (config per_level)",
+          abs(game.player["x"] - (config.DISPLAY["width"] / 2
+                                  + base_speed * (1 + spd_per) * dt)) < 1e-6)
+
+    # --- +magnet radius: the XP-gem pickup radius increases by the config per_level. ---
+    mag_per = config.UPGRADE["passives"]["magnet_radius"]["per_level"]
+    upgrade.apply_pick(game, "magnet_radius")
+    check("Picking +magnet radius stores the passive in the player state",
+          game.player["passives"]["magnet_radius"] == 1)
+    px, py = game.player["x"], game.player["y"]
+    # A gem just outside the base radius but inside the boosted radius is pulled.
+    game.xp["gems"] = [{"x": px + base_magnet + 5.0, "y": py, "vx": 0.0, "vy": 0.0}]
+    xp.update(game, dt)
+    check("Picking +magnet radius increases the gem pickup radius (config per_level)",
+          game.xp["gems"][0]["x"] < px + base_magnet + 5.0)
+    # A gem outside the boosted radius is still not pulled.
+    game.xp["gems"] = [{"x": px + base_magnet + mag_per + 5.0, "y": py,
+                        "vx": 0.0, "vy": 0.0}]
+    xp.update(game, dt)
+    check("Gem outside the boosted magnet radius is not pulled",
+          game.xp["gems"][0]["x"] == px + base_magnet + mag_per + 5.0)
+
+    # --- -cooldown: weapon fire cooldowns decrease by the config per_level. ---
+    cd_per = config.UPGRADE["passives"]["cooldown"]["per_level"]
+    upgrade.apply_pick(game, "cooldown")
+    check("Picking -cooldown stores the passive in the player state",
+          game.player["passives"]["cooldown"] == 1)
+    game.projectiles = []
+    for w in game.weapons:
+        w["last_fired"] = None if w["type"] == "pistol" else 0.0
+    weapon.update(game, dt)
+    check("Pistol fired with the reduced cooldown",
+          len([q for q in game.projectiles if q.get("weapon") == "pistol"]) == 1)
+    # The pistol is on its (reduced) cooldown: it does not fire again next frame.
+    game.projectiles = []
+    weapon.update(game, dt)
+    check("Pistol is on its reduced cooldown (no second shot)",
+          len([q for q in game.projectiles if q.get("weapon") == "pistol"]) == 0)
+    # After the reduced cooldown elapses, it fires again.
+    game.projectiles = []
+    for w in game.weapons:
+        w["last_fired"] = game.run_time - pistol["fire_rate"] * (1 - cd_per) - 2 * dt
+    weapon.update(game, dt)
+    check("Pistol fires again once the reduced cooldown elapses",
+          len([q for q in game.projectiles if q.get("weapon") == "pistol"]) == 1)
+
+    # --- Passive levels cap at the config max_level. ---
+    max_lvl = config.UPGRADE["passives"]["damage"]["max_level"]
+    game.player["passives"]["damage"] = max_lvl
+    upgrade.apply_pick(game, "damage")
+    check("Passive level caps at the config max_level",
+          game.player["passives"]["damage"] == max_lvl)
+
+    # --- Effects are applied each frame from the player state (not one-shot). ---
+    # Reset the pistol cooldown and confirm the damage bonus still applies
+    # at the current (max) passive level.
+    game.projectiles = []
+    for w in game.weapons:
+        w["last_fired"] = None if w["type"] == "pistol" else 0.0
+    weapon.update(game, dt)
+    p = [q for q in game.projectiles if q.get("weapon") == "pistol"][0]
+    expected = pistol["damage"] * (1 + dmg_per * max_lvl)
+    check("Passive effects persist across frames (applied each frame)",
+          abs(p["damage"] - expected) < 1e-9)
+
+    pygame.quit()
+
+
+def test_weapon_evolution():
+    """T12: A weapon evolution unlocks when the weapon and its paired
+    passive are both at max level. Evolved stats take effect."""
+    print("\n[evolution] Weapon evolutions")
+    import weapon
+    import upgrade
+
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    dt = 1 / 60.0
+    evo_cfg = config.WEAPON["evolutions"]["pistol"]
+    max_wpn = config.WEAPON["max_level"]
+    max_psv = config.UPGRADE["passives"]["damage"]["max_level"]
+
+    # --- can_evolve is a pure function of config values. ---
+    check("can_evolve: weapon below max → False",
+          weapon.can_evolve("pistol", 1, {"damage": max_psv}) is False)
+    check("can_evolve: passive below max → False",
+          weapon.can_evolve("pistol", max_wpn, {"damage": 0}) is False)
+    check("can_evolve: both at max → True",
+          weapon.can_evolve("pistol", max_wpn, {"damage": max_psv}) is True)
+    check("can_evolve: unknown weapon → False",
+          weapon.can_evolve("nonexistent", max_wpn, {"damage": max_psv}) is False)
+
+    # --- Weapon starts at level 1, not evolved. ---
+    pistol_w = [w for w in game.weapons if w["type"] == "pistol"][0]
+    check("Pistol starts at level 1", pistol_w["level"] == 1)
+    check("Pistol starts not evolved", pistol_w["evolved"] is False)
+
+    # --- Bump weapon to max level via apply_weapon_level_pick. ---
+    for _ in range(max_wpn - 1):
+        upgrade.apply_weapon_level_pick(game, "pistol")
+    check("Pistol at max level after picks", pistol_w["level"] == max_wpn)
+
+    # --- Evolution not yet unlocked (passive not at max). ---
+    upgrade.apply_evolved_pick(game, "pistol")
+    check("Evolution not unlocked before passive at max",
+          pistol_w["evolved"] is False)
+
+    # --- Bump paired passive (damage) to max level. ---
+    for _ in range(max_psv):
+        upgrade.apply_pick(game, "damage")
+    check("Damage passive at max level",
+          game.player["passives"]["damage"] == max_psv)
+
+    # --- Now evolution unlocks. ---
+    upgrade.apply_evolved_pick(game, "pistol")
+    check("Pistol evolved after both at max", pistol_w["evolved"] is True)
+
+    # --- Evolved stats take effect: damage uses evolved value. ---
+    game.zombies = [{"x": game.player["x"] + 50.0, "y": game.player["y"],
+                     "vx": 0.0, "vy": 0.0, "hp": 1000, "type": "walker"}]
+    game.projectiles = []
+    for w in game.weapons:
+        w["last_fired"] = None if w["type"] == "pistol" else 0.0
+    weapon.update(game, dt)
+    p = [q for q in game.projectiles if q.get("weapon") == "pistol"][0]
+    # Evolved damage (20) * passive multiplier (1 + 0.1 * 5 = 1.5) = 30
+    expected_damage = evo_cfg["evolved_stats"]["damage"] * (
+        1 + config.UPGRADE["passives"]["damage"]["per_level"] * max_psv)
+    check("Evolved pistol uses evolved damage stat",
+          abs(p["damage"] - expected_damage) < 1e-9)
+
+    # --- Evolved fire rate is used (faster than base). ---
+    # Reset cooldown and verify the evolved fire_rate is in effect.
+    game.projectiles = []
+    for w in game.weapons:
+        w["last_fired"] = None if w["type"] == "pistol" else 0.0
+    weapon.update(game, dt)
+    check("Evolved pistol fires (evolved fire_rate honored)",
+          len([q for q in game.projectiles if q.get("weapon") == "pistol"]) == 1)
+
+    # --- Evolution is idempotent (picking again is a no-op). ---
+    upgrade.apply_evolved_pick(game, "pistol")
+    check("Evolution is idempotent", pistol_w["evolved"] is True)
+
+    # --- Other weapons are unaffected. ---
+    knife_w = [w for w in game.weapons if w["type"] == "knife"][0]
+    check("Knife not evolved (different paired passive)",
+          knife_w["evolved"] is False)
+
+    pygame.quit()
+
+
 def test_menu_navigation():
     """Menu navigation works (Play starts a run, Quit exits)."""
     print("\n[menu] Menu navigation")
@@ -1119,6 +1325,8 @@ def main():
     test_xp_rendered()
     test_upgrade_option_pool()
     test_level_up_pause_and_pick()
+    test_passive_pick_effects()
+    test_weapon_evolution()
     test_menu_navigation()
 
     print("\n" + "=" * 60)

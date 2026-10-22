@@ -23,7 +23,10 @@ def update(game, dt=1 / 60.0):
 
     if dx or dy:
         length = math.hypot(dx, dy)
-        speed = config.PLAYER["speed"]
+        # T12: +move speed passive (config per_level, applied each frame).
+        speed = config.PLAYER["speed"] * (
+            1 + config.UPGRADE["passives"]["move_speed"]["per_level"]
+            * p["passives"]["move_speed"])
         p["x"] += dx / length * speed * dt
         p["y"] += dy / length * speed * dt
         p["facing"] = (dx / length, dy / length)
@@ -49,4 +52,6 @@ def init(game):
         "hp": config.PLAYER["max_hp"],
         "invuln_timer": 0.0,
         "facing": (1.0, 0.0),
+        # T12: passive item levels (config-driven), applied each frame.
+        "passives": {name: 0 for name in config.UPGRADE["passives"]},
     }

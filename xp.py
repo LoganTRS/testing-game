@@ -71,7 +71,10 @@ def _check_level_up(game):
 def _magnet_pickup(game, dt):
     """Pull gems within the magnet radius toward the player; collect on contact."""
     p = game.player
-    radius = config.XP["gem_magnet_radius"]
+    # T12: +magnet radius passive (config per_level, applied each frame).
+    radius = config.XP["gem_magnet_radius"] + \
+        config.UPGRADE["passives"]["magnet_radius"]["per_level"] \
+        * p["passives"]["magnet_radius"]
     pickup = config.XP["gem_pickup_radius"]
     speed = config.XP["gem_magnet_speed"]
     gems = game.xp["gems"]

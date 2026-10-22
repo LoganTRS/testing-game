@@ -86,7 +86,10 @@ class Game:
             return
         if not 0 <= index < len(self.upgrade["options"]):
             return
-        self.upgrade["picked"] = self.upgrade["options"][index]["name"]
+        option = self.upgrade["options"][index]
+        self.upgrade["picked"] = option["name"]
+        # T12: apply the real effect based on the option's category.
+        self._apply_option(option)
         self.upgrade["picks_left"] -= 1
         self.xp["level"] = min(self.xp["level"] + 1, config.XP["max_level"])
         if self.upgrade["picks_left"] <= 0:
@@ -97,6 +100,18 @@ class Game:
             # Multiple picks (high levels / batched level-ups): re-roll.
             self.upgrade["options"] = upgrade.roll_options(
                 upgrade.option_pool(), self.rng)
+
+    def _apply_option(self, option):
+        """T12: dispatch a picked option to the appropriate apply function."""
+        category = option["category"]
+        icon = option["icon"]
+        if category == "passive":
+            upgrade.apply_pick(self, icon)
+        elif category == "weapon_level":
+            upgrade.apply_weapon_level_pick(self, icon)
+        elif category == "evolved_weapon":
+            upgrade.apply_evolved_pick(self, icon)
+        # "new_weapon" is a no-op in v1 (all weapons available from start).
 
     def handle_level_up_reroll(self):
         """Re-roll the 3 overlay options (1 reroll per level-up)."""
