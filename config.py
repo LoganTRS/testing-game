@@ -185,8 +185,38 @@ RUN = {
 # --- HUD ---
 HUD = {
     "font_size": 24,
-    "hp_bar_width": 200,
-    "hp_bar_height": 20,
+    "hp_bar": {
+        "x": 16,
+        "y": 16,
+        "width": 200,
+        "height": 20,
+        "color": (200, 40, 40),   # remaining-life fill
+        "background": (60, 20, 20),  # empty (lost) portion
+        "border": (255, 255, 255),
+    },
+    "timer": {
+        "x": 1280 - 16,           # right-aligned (anchor = right edge)
+        "y": 16,
+        "color": (255, 255, 255),
+    },
+    "level": {
+        "x": 16,
+        "y": 44,
+        "color": (100, 255, 100),
+    },
+    "kills": {
+        "x": 16,
+        "y": 72,
+        "color": (255, 200, 100),
+    },
+    "icons": {
+        "x": 16,
+        "y": 100,
+        "size": 24,
+        "gap": 6,
+        "weapon_color": (255, 255, 255),
+        "passive_color": (120, 180, 255),
+    },
 }
 
 # --- Menu ---

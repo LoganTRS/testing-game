@@ -76,10 +76,11 @@ def _contact_damage(game, dt):
 
 
 def _kill_drops(game):
-    """Remove dead zombies and drop XP gems at their position."""
+    """Remove dead zombies, drop XP gems at their position, and count the kill."""
     for z in list(game.zombies):
         if z["hp"] <= 0:
             game.zombies.remove(z)
+            game.hud["kills"] += 1
             for _ in range(_GEM_DROPS.get(z["type"], 1)):
                 game.xp["gems"].append({"x": z["x"], "y": z["y"],
                                         "vx": 0.0, "vy": 0.0})
