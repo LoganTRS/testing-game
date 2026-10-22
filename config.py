@@ -61,37 +61,57 @@ ZOMBIE = {
 }
 
 # --- Weapons ---
+# Every weapon has a `type` field the weapon module dispatches on:
+#   projectile — straight bullet (pistol)
+#   throw      — arcing projectile (knife)
+#   whirlwind  — melee area damage around the player (baton)
+#   sniper     — long-range fast projectile (sniper)
+#   flare      — arcing projectile that explodes into an AoE (flare)
 WEAPON = {
     "types": {
         "pistol": {
+            "type": "projectile",
             "damage": 10,
             "fire_rate": 0.5,   # seconds between shots
             "bullet_speed": 500.0,
             "bullet_count": 1,
+            "range": 600.0,
         },
         "knife": {
+            "type": "throw",
             "damage": 25,
             "fire_rate": 1.0,
             "bullet_speed": 400.0,
             "bullet_count": 1,
+            "range": 400.0,
+            "arc": 150.0,       # throw arc height (pixels)
         },
         "baton": {
+            "type": "whirlwind",
             "damage": 5,
             "fire_rate": 0.3,
             "bullet_speed": 0.0,  # melee, no projectile
             "bullet_count": 0,
+            "range": 80.0,
+            "whirlwind_radius": 80.0,  # area around the player
         },
         "sniper": {
+            "type": "sniper",
             "damage": 80,
             "fire_rate": 2.0,
             "bullet_speed": 1200.0,
             "bullet_count": 1,
+            "range": 1200.0,
         },
         "flare": {
+            "type": "flare",
             "damage": 3,
             "fire_rate": 0.1,
             "bullet_speed": 300.0,
             "bullet_count": 1,
+            "range": 500.0,
+            "arc": 100.0,
+            "aoe_radius": 60.0,  # explosion radius on impact
         },
     },
 }

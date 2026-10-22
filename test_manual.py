@@ -498,8 +498,9 @@ def test_pistol_auto_fire():
 
     # First frame: never fired → fires immediately, spawning a projectile.
     weapon.update(game, dt)
+    pistol_p = [p for p in game.projectiles if p.get("weapon") == "pistol"]
     check("Pistol fires on the first frame (no shoot button)",
-          len(game.projectiles) == 1)
+          len(pistol_p) == 1)
     check("Pistol is the active weapon",
           game.weapons and game.weapons[0]["type"] == "pistol")
     check("Cooldown is recorded after firing",
@@ -507,19 +508,192 @@ def test_pistol_auto_fire():
 
     # Next frame: still on cooldown → no second projectile.
     weapon.update(game, dt)
-    check("No second shot while on cooldown", len(game.projectiles) == 1)
+    check("No second shot while on cooldown",
+          len([p for p in game.projectiles if p.get("weapon") == "pistol"]) == 1)
 
     # After the cooldown elapses, the pistol fires again.
     game.weapons[0]["last_fired"] = game.run_time - pistol["fire_rate"]
     weapon.update(game, dt)
     check("Pistol fires again once the cooldown elapses",
-          len(game.projectiles) == 2)
+          len([p for p in game.projectiles if p.get("weapon") == "pistol"]) == 2)
 
     # No zombies → no target → no fire.
     game.projectiles = []
     game.zombies = []
     weapon.update(game, dt)
     check("No zombies → no projectile", len(game.projectiles) == 0)
+
+
+def test_all_weapons_fire_simultaneously():
+    """All 5 weapons auto-fire at the nearest zombie on independent cooldowns."""
+    print("\n[weapon] All 5 weapons fire simultaneously")
+    import weapon
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    dt = 1 / 60.0
+    types = [w["type"] for w in game.weapons]
+    check("All 5 weapons are active from the start",
+          sorted(types) == sorted(["pistol", "knife", "baton", "sniper", "flare"]))
+
+    # One zombie in range of every weapon.
+    game.zombies = [{"x": game.player["x"] + 50.0, "y": game.player["y"],
+                     "vx": 0.0, "vy": 0.0, "hp": 1000, "type": "walker"}]
+
+    # First frame: every weapon has never fired → all 5 fire.
+    game.projectiles = []
+    weapon.update(game, dt)
+    check("All 5 weapons fire on the first frame",
+          len(game.projectiles) + sum(1 for w in game.weapons if w["type"] == "baton") == 5)
+    check("Every weapon recorded a cooldown",
+          all(w["last_fired"] is not None for w in game.weapons))
+
+    # Next frame: all on cooldown → nothing fires.
+    game.projectiles = []
+    weapon.update(game, dt)
+    check("No weapon fires while all are on cooldown", len(game.projectiles) == 0)
+
+    # Independent cooldowns: only the pistol (shortest fire_rate) is ready.
+    game.projectiles = []
+    for w in game.weapons:
+        w["last_fired"] = game.run_time - config.WEAPON["types"][w["type"]]["fire_rate"]
+    weapon.update(game, dt)
+    check("All 5 weapons fire again once their own cooldowns elapse",
+          len(game.projectiles) + 1 == 5)
+
+    # A zombie out of range of a weapon → that weapon does not fire.
+    game.projectiles = []
+    for w in game.weapons:
+        w["last_fired"] = None
+    game.zombies = [{"x": game.player["x"] + 1000.0, "y": game.player["y"],
+                     "vx": 0.0, "vy": 0.0, "hp": 1000, "type": "walker"}]
+    weapon.update(game, dt)
+    fired = [w["type"] for w in game.weapons if w["last_fired"] is not None]
+    check("Only the sniper reaches a zombie 1000px away", fired == ["sniper"])
+
+    pygame.quit()
+
+
+def test_weapon_firing_behaviors():
+    """Each weapon type has distinct firing behavior (throw arc / whirlwind area /
+    long-range / AoE flare), dispatched on the config `type` field."""
+    print("\n[weapon] Distinct firing behavior per type")
+    import weapon
+    import projectile
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    dt = 1 / 60.0
+    px, py = game.player["x"], game.player["y"]
+
+    # Knife (throw): arcing projectile — gains height, then falls.
+    game.zombies = [{"x": px + 200.0, "y": py, "vx": 0.0, "vy": 0.0,
+                     "hp": 1000, "type": "walker"}]
+    game.projectiles = []
+    for w in game.weapons:
+        w["last_fired"] = None if w["type"] == "knife" else 0.0
+    weapon.update(game, dt)
+    knife_p = [p for p in game.projectiles if p.get("weapon") == "knife"]
+    check("Knife fires an arcing projectile", len(knife_p) == 1 and "arc" in knife_p[0])
+    y0 = knife_p[0]["y"]
+    projectile.update(game, dt)
+    check("Knife projectile rises (throw arc)", knife_p[0]["y"] < y0)
+
+    # Baton (whirlwind): no projectile — area damage around the player.
+    game.zombies = [{"x": px + 40.0, "y": py, "vx": 0.0, "vy": 0.0,
+                     "hp": 1000, "type": "walker"}]
+    game.projectiles = []
+    for w in game.weapons:
+        w["last_fired"] = None if w["type"] == "baton" else 0.0
+    hp_before = game.zombies[0]["hp"]
+    weapon.update(game, dt)
+    check("Whirlwind spawns no projectile", len(game.projectiles) == 0)
+    check("Whirlwind deals its config damage to a zombie in the area",
+          game.zombies[0]["hp"] == hp_before - config.WEAPON["types"]["baton"]["damage"])
+
+    # A zombie outside the whirlwind radius is untouched.
+    game.zombies = [{"x": px + 200.0, "y": py, "vx": 0.0, "vy": 0.0,
+                     "hp": 1000, "type": "walker"}]
+    for w in game.weapons:
+        w["last_fired"] = None if w["type"] == "baton" else 0.0
+    hp_before = game.zombies[0]["hp"]
+    weapon.update(game, dt)
+    check("Whirlwind does not hit a zombie outside its radius",
+          game.zombies[0]["hp"] == hp_before)
+
+    # Sniper (long-range): fast projectile at the sniper's config speed.
+    game.zombies = [{"x": px + 900.0, "y": py, "vx": 0.0, "vy": 0.0,
+                     "hp": 1000, "type": "walker"}]
+    game.projectiles = []
+    for w in game.weapons:
+        w["last_fired"] = None if w["type"] == "sniper" else 0.0
+    weapon.update(game, dt)
+    sniper_p = [p for p in game.projectiles if p.get("weapon") == "sniper"]
+    check("Sniper fires a projectile", len(sniper_p) == 1)
+    check("Sniper projectile travels at its config speed",
+          abs(math.hypot(sniper_p[0]["vx"], sniper_p[0]["vy"])
+              - config.WEAPON["types"]["sniper"]["bullet_speed"]) < 1e-6)
+
+    # Flare (AoE): arcing projectile that explodes, damaging zombies in the radius.
+    game.zombies = [{"x": px + 100.0, "y": py, "vx": 0.0, "vy": 0.0,
+                     "hp": 1000, "type": "walker"}]
+    game.projectiles = []
+    for w in game.weapons:
+        w["last_fired"] = None if w["type"] == "flare" else 0.0
+    weapon.update(game, dt)
+    flare_p = [p for p in game.projectiles if p.get("weapon") == "flare"]
+    check("Flare fires an arcing projectile", len(flare_p) == 1 and "arc" in flare_p[0])
+    # Place the flare on the zombie and let it explode.
+    flare_p[0]["x"] = game.zombies[0]["x"]
+    flare_p[0]["y"] = game.zombies[0]["y"]
+    hp_before = game.zombies[0]["hp"]
+    projectile.update(game, dt)
+    check("Flare explosion deals its config damage (AoE)",
+          game.zombies[0]["hp"] == hp_before - config.WEAPON["types"]["flare"]["damage"])
+
+    # A second zombie inside the AoE radius is hit by the same explosion.
+    game.zombies = [{"x": px + 100.0, "y": py, "vx": 0.0, "vy": 0.0,
+                     "hp": 1000, "type": "walker"},
+                    {"x": px + 100.0, "y": py + 30.0, "vx": 0.0, "vy": 0.0,
+                     "hp": 1000, "type": "walker"}]
+    game.projectiles = []
+    for w in game.weapons:
+        w["last_fired"] = None if w["type"] == "flare" else 0.0
+    weapon.update(game, dt)
+    flare_p = [p for p in game.projectiles if p.get("weapon") == "flare"]
+    flare_p[0]["x"] = game.zombies[0]["x"]
+    flare_p[0]["y"] = game.zombies[0]["y"]
+    hp0 = game.zombies[0]["hp"]
+    hp1 = game.zombies[1]["hp"]
+    projectile.update(game, dt)
+    check("Flare AoE hits every zombie in the radius",
+          game.zombies[0]["hp"] == hp0 - config.WEAPON["types"]["flare"]["damage"]
+          and game.zombies[1]["hp"] == hp1 - config.WEAPON["types"]["flare"]["damage"])
+
+    pygame.quit()
+
+
+def test_weapon_stats_from_config():
+    """Each weapon's stats (fire rate, damage, range, projectile behavior) are
+    config.py dict values."""
+    print("\n[config] Weapon stats are config dict values")
+    for name in ["pistol", "knife", "baton", "sniper", "flare"]:
+        w = config.WEAPON["types"][name]
+        check(f"{name} has a type field", "type" in w)
+        check(f"{name} fire rate is a config dict value", "fire_rate" in w)
+        check(f"{name} damage is a config dict value", "damage" in w)
+        check(f"{name} range is a config dict value", "range" in w)
+    check("Knife throw arc is a config dict value", "arc" in config.WEAPON["types"]["knife"])
+    check("Baton whirlwind radius is a config dict value",
+          "whirlwind_radius" in config.WEAPON["types"]["baton"])
+    check("Flare AoE radius is a config dict value",
+          "aoe_radius" in config.WEAPON["types"]["flare"])
+    check("Sniper range exceeds pistol range",
+          config.WEAPON["types"]["sniper"]["range"] > config.WEAPON["types"]["pistol"]["range"])
 
 
 def test_xp_math():
@@ -561,9 +735,8 @@ def test_projectile_travel_and_damage():
     game.zombies = [{"x": game.player["x"] + 200.0, "y": game.player["y"],
                      "vx": 0.0, "vy": 0.0, "hp": 30, "type": "walker"}]
     weapon.update(game, dt)
-    check("A projectile was spawned", len(game.projectiles) == 1)
-
-    p = game.projectiles[0]
+    p = [q for q in game.projectiles if q.get("weapon") == "pistol"][0]
+    check("A projectile was spawned", len(game.projectiles) >= 1)
     check("Projectile carries the pistol's config damage", p["damage"] == damage)
     check("Projectile aims at the target (moves right)", p["vx"] > 0 and p["vy"] == 0)
 
@@ -580,7 +753,8 @@ def test_projectile_travel_and_damage():
     projectile.update(game, dt)
     check("Hit deals the pistol's config damage",
           game.zombies[0]["hp"] == hp_before - damage)
-    check("Hit projectile is removed", len(game.projectiles) == 0)
+    check("Hit projectile is removed",
+          len([q for q in game.projectiles if q.get("weapon") == "pistol"]) == 0)
 
     # A lethal hit removes the zombie.
     game.zombies = [{"x": 100.0, "y": 100.0, "vx": 0.0, "vy": 0.0,
@@ -766,8 +940,11 @@ def main():
     test_weapon_targeting()
     test_weapon_cooldown()
     test_pistol_auto_fire()
+    test_all_weapons_fire_simultaneously()
+    test_weapon_firing_behaviors()
     test_projectile_travel_and_damage()
     test_pistol_stats_from_config()
+    test_weapon_stats_from_config()
     test_xp_math()
     test_xp_kill_drops_gem()
     test_xp_magnet_pickup()
