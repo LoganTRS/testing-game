@@ -1268,6 +1268,155 @@ def test_weapon_evolution():
     pygame.quit()
 
 
+def test_hud_timer_format():
+    """The 20:00 countdown timer formats as MM:SS with a milestone each minute."""
+    print("\n[hud] Timer format")
+    import hud
+
+    duration = config.RUN["duration_seconds"]
+    check("Start of run shows the full 20:00", hud.format_timer(0) == "20:00")
+    check("After 1 second it counts down", hud.format_timer(1) == "19:59")
+    # Milestone at each minute: the MM component ticks down once per minute.
+    check("Milestone at the 1-minute mark", hud.format_timer(60) == "19:00")
+    check("Milestone at the 2-minute mark", hud.format_timer(120) == "18:00")
+    check("Mid-minute shows the seconds", hud.format_timer(90) == "18:30")
+    # Clamps at 00:00 (never goes negative).
+    check("Clamps at 00:00 at the end of the run", hud.format_timer(duration) == "00:00")
+    check("Clamps at 00:00 past the end of the run", hud.format_timer(duration + 5) == "00:00")
+    # Pure function of elapsed + config duration (independent of game state).
+    check("Uses the config duration by default",
+          hud.format_timer(0) == f"{duration // 60:02d}:{duration % 60:02d}")
+
+
+def test_hud_hp_bar_rendered():
+    """A player HP bar is rendered as a proportional remaining-life fill."""
+    print("\n[hud] HP bar")
+    import hud
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    bar = config.HUD["hp_bar"]
+    max_hp = config.PLAYER["max_hp"]
+    fill_color = pygame.Color(*bar["color"])
+    bg_color = pygame.Color(*bar["background"])
+
+    # Full HP: the fill spans the whole bar width.
+    game.player["hp"] = max_hp
+    game.render(screen)
+    check("Full HP fills the whole bar",
+          screen.get_at((bar["x"] + 2, bar["y"] + 2)) == fill_color)
+    check("Full HP fill width equals the bar width",
+          hud._hp_bar_fill_width(max_hp, max_hp) == bar["width"])
+
+    # Half HP: the fill is proportional (about half the width).
+    game.player["hp"] = max_hp // 2
+    game.render(screen)
+    half_width = hud._hp_bar_fill_width(max_hp // 2, max_hp)
+    check("Half HP fill is proportional (about half the width)",
+          abs(half_width - bar["width"] // 2) <= 1)
+    # The right half of the bar shows the empty (background) portion.
+    check("Lost HP shows the bar background",
+          screen.get_at((bar["x"] + bar["width"] - 2, bar["y"] + 2)) == bg_color)
+
+    # Zero HP: no fill at all.
+    game.player["hp"] = 0
+    game.render(screen)
+    check("Zero HP has no fill", hud._hp_bar_fill_width(0, max_hp) == 0)
+    check("Zero HP bar shows the background",
+          screen.get_at((bar["x"] + 2, bar["y"] + 2)) == bg_color)
+
+    pygame.quit()
+
+
+def test_hud_kill_count_increments():
+    """The kill count increments on zombie death."""
+    print("\n[hud] Kill count")
+    import zombie
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    check("Kill count starts at 0", game.hud["kills"] == 0)
+
+    # A dead zombie is removed and counted as a kill.
+    game.zombies = [{"x": 100.0, "y": 100.0, "vx": 0.0, "vy": 0.0,
+                     "hp": 0, "type": "walker"}]
+    zombie.update(game, 1 / 60.0)
+    check("Kill count increments on zombie death", game.hud["kills"] == 1)
+
+    # A living zombie is not counted.
+    game.zombies = [{"x": 100.0, "y": 100.0, "vx": 0.0, "vy": 0.0,
+                     "hp": 30, "type": "walker"}]
+    zombie.update(game, 1 / 60.0)
+    check("Living zombie does not increment the kill count", game.hud["kills"] == 1)
+
+    # Multiple deaths accumulate.
+    game.zombies = [{"x": 100.0, "y": 100.0, "vx": 0.0, "vy": 0.0,
+                     "hp": 0, "type": "walker"},
+                    {"x": 200.0, "y": 200.0, "vx": 0.0, "vy": 0.0,
+                     "hp": 0, "type": "walker"}]
+    zombie.update(game, 1 / 60.0)
+    check("Multiple deaths accumulate the kill count", game.hud["kills"] == 3)
+
+    pygame.quit()
+
+
+def test_hud_item_icons():
+    """Item icons reflect the currently-owned weapons and passives."""
+    print("\n[hud] Item icons")
+    import hud
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    icons = config.HUD["icons"]
+    size, gap = icons["size"], icons["gap"]
+    weapon_color = pygame.Color(*icons["weapon_color"])
+    passive_color = pygame.Color(*icons["passive_color"])
+    bg_color = pygame.Color(*config.RENDERER["background_color"])
+
+    n_weapons = len(game.weapons)
+    # The first owned weapon draws an icon at the first slot.
+    game.render(screen)
+    check("First owned weapon draws an icon",
+          screen.get_at((icons["x"] + 2, icons["y"] + 2)) == weapon_color)
+    # The slot just past the last weapon icon is empty (no passives owned).
+    last_weapon_x = icons["x"] + (n_weapons - 1) * (size + gap)
+    check("No passive icon when no passives are owned",
+          screen.get_at((last_weapon_x + size + gap + 2, icons["y"] + 2)) == bg_color)
+
+    # Owning a passive adds a passive icon right after the weapon icons.
+    game.hud["passives"] = ["damage"]
+    game.render(screen)
+    check("A passive icon appears after the weapon icons",
+          screen.get_at((last_weapon_x + size + gap + 2, icons["y"] + 2)) == passive_color)
+
+    pygame.quit()
+
+
+def test_hud_config_driven():
+    """All HUD layout/positions are config.py-driven."""
+    print("\n[hud] Config-driven layout")
+    check("HUD hp_bar position is a config dict value",
+          "x" in config.HUD["hp_bar"] and "y" in config.HUD["hp_bar"])
+    check("HUD hp_bar size is a config dict value",
+          "width" in config.HUD["hp_bar"] and "height" in config.HUD["hp_bar"])
+    check("HUD timer position is a config dict value",
+          "x" in config.HUD["timer"] and "y" in config.HUD["timer"])
+    check("HUD level position is a config dict value",
+          "x" in config.HUD["level"] and "y" in config.HUD["level"])
+    check("HUD kills position is a config dict value",
+          "x" in config.HUD["kills"] and "y" in config.HUD["kills"])
+    check("HUD icons position/size is a config dict value",
+          "x" in config.HUD["icons"] and "y" in config.HUD["icons"]
+          and "size" in config.HUD["icons"])
+    check("HUD font size is a config dict value", "font_size" in config.HUD)
+
+
 def test_menu_navigation():
     """Menu navigation works (Play starts a run, Quit exits)."""
     print("\n[menu] Menu navigation")
@@ -1327,6 +1476,11 @@ def main():
     test_level_up_pause_and_pick()
     test_passive_pick_effects()
     test_weapon_evolution()
+    test_hud_timer_format()
+    test_hud_hp_bar_rendered()
+    test_hud_kill_count_increments()
+    test_hud_item_icons()
+    test_hud_config_driven()
     test_menu_navigation()
 
     print("\n" + "=" * 60)

@@ -187,6 +187,8 @@ class Game:
         px = int(self.player["x"])
         py = int(self.player["y"])
         pygame.draw.rect(screen, (255, 255, 255), (px - 4, py - 4, 8, 8))
+        # HUD overlay: HP bar, timer, level, kill count, item icons.
+        hud.render(self, screen)
 
     def _render_level_up_overlay(self, screen):
         """Full-screen 3-card level-up overlay (icon, name, description)."""
