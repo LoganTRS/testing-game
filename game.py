@@ -123,8 +123,12 @@ class Game:
                                config.DISPLAY["height"] // 2 + i * 50))
 
     def _render_game(self, screen):
-        """Render the game world (scaffold: just background)."""
+        """Render the game world."""
         screen.fill(config.RENDERER["background_color"])
+        # Player: pixel-art placeholder (small square at its position).
+        px = int(self.player["x"])
+        py = int(self.player["y"])
+        pygame.draw.rect(screen, (255, 255, 255), (px - 4, py - 4, 8, 8))
 
     def handle_event(self, event):
         """Handle a pygame event. Returns True if the game should quit."""
