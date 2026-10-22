@@ -158,6 +158,11 @@ UPGRADE = {
         "magnet_radius": {"max_level": 5, "per_level": 20.0},
         "cooldown": {"max_level": 5, "per_level": 0.05},
     },
+    # Multiple picks at high levels (per the ~level-30 curve).
+    "multi_pick_level": 15,   # level at which extra picks start
+    "picks_per_extra_level": 15,  # +1 pick every N levels above multi_pick_level
+    "max_picks": 3,
+    "max_level": 30,          # mirrors XP max_level for the pick curve
 }
 
 # --- Items ---
