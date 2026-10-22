@@ -1,10 +1,15 @@
 # .github/workflows/paperclip-pr-close.yml
 #
-# GitHub-side half: when a PR is closed (merged or discarded), mark the
-# corresponding Paperclip ticket as `done`. The PR body must reference the
-# Paperclip ticket via a `Paperclip-Ticket: <identifier>` line (e.g.
-# `Paperclip-Ticket: TEC-101`). The workflow reads the PR body, extracts the
-# identifier, and PATCHes the Paperclip ticket to `done`.
+# GitHub-side half: when a PR is closed (merged or discarded):
+#   1. Mark the corresponding Paperclip ticket as `done`.
+#   2. Reconciliation: wake ALL other active Paperclip tickets in the batch so
+#      they can fetch main, rebase, and fix conflicts in real time.
+#
+# The PR body must reference the Paperclip ticket via a
+# `Paperclip-Ticket: <identifier>` line (e.g. `Paperclip-Ticket: TEC-101`).
+# The workflow reads the PR body, extracts the identifier, and PATCHes the
+# Paperclip ticket to `done`. It also queries open PRs and posts comments on
+# conflicted PRs to trigger rebases.
 #
 # Requires (per-repo, seeded by the Paperclip seeder):
 #   - .paperclip-routing.json at the repo root (companyId, projectId)
@@ -12,8 +17,7 @@
 #   - repo SECRET  PAPERCLIP_API_KEY (board-level Paperclip key)
 #
 # The workflow uses the job-scoped GITHUB_TOKEN (no `gh` binary, no fine-grained
-# PAT needed - it only reads the PR body via the GitHub API, which the
-# job-scoped token can do on its own repo).
+# PAT needed). It needs `pull-requests: write` to post comments on conflicted PRs.
 name: paperclip-pr-close
 
 on:
@@ -22,7 +26,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   close-ticket:
@@ -34,7 +38,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Mark Paperclip ticket done
+      - name: Mark Paperclip ticket done + reconcile active tickets
         env:
           PAPERCLIP_URL: ${{ vars.PAPERCLIP_URL }}
           PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
@@ -44,4 +48,5 @@ jobs:
           GH_PR_NUMBER: ${{ github.event.pull_request.number }}
           GH_PR_BODY: ${{ github.event.pull_request.body }}
           GH_PR_MERGED: ${{ github.event.pull_request.merged }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: node .github/paperclip-pr-close.mjs
