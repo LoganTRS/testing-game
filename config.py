@@ -56,6 +56,8 @@ ZOMBIE = {
             "hp": 5000,
             "color": (200, 50, 50),
             "xp_drop": 100,
+            "contact_damage": 25,
+            "i_frame_duration": 0.5,
         },
     },
 }
@@ -76,6 +78,22 @@ SPAWN = {
         "runner": {"base": 0.0, "peak": 0.9, "peak_time": 600.0, "width": 120.0},
         "brute": {"base": 0.0, "peak": 0.9, "peak_time": 1200.0, "width": 120.0},
     },
+}
+
+# --- Boss (T10: end-of-run, on top of the horde, telegraphed) ---
+# The boss spawns exactly once, at the timer end (20:00 → 0:00), on top of
+# the horde: zombie spawning continues at a reduced rate while it is alive.
+# The spawn is telegraphed with a banner and a screen shake. Defeating the
+# boss (or the timer hitting 0:00) ends the run with a win.
+BOSS = {
+    "spawn_time": 1200.0,      # seconds into the run (the timer end)
+    "reduced_spawn_rate": 0.5,  # zombies/second while the boss is alive
+    "banner_text": "THE BOSS HAS ARRIVED",
+    "banner_duration": 3.0,     # seconds the banner stays on screen
+    "banner_color": (255, 60, 60),
+    "banner_font_size": 48,
+    "shake_magnitude": 10,      # screen-shake pixels for the telegraph
+    "shake_duration": 0.5,      # seconds of screen shake for the telegraph
 }
 
 # --- Weapons ---

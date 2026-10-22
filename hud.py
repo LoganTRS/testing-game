@@ -35,11 +35,13 @@ def _hp_bar_fill_width(hp, max_hp):
     return int(round(ratio * config.HUD["hp_bar"]["width"]))
 
 
-def update(game):
+def update(game, dt=1 / 60.0):
     """Update HUD state. Called each frame during a run."""
     # The kill count is incremented by the zombie module on death; the HUD
     # itself is stateless beyond the kill counter it owns.
-    pass
+    # T10: the boss telegraph banner counts down to nothing.
+    if game.hud["boss_banner_timer"] > 0:
+        game.hud["boss_banner_timer"] = max(0.0, game.hud["boss_banner_timer"] - dt)
 
 
 def render(game, screen):
@@ -84,10 +86,20 @@ def render(game, screen):
         pygame.draw.rect(screen, color, (x, y, size, size))
         x += size + gap
 
+    # --- T10: boss telegraph banner ---
+    if game.hud["boss_banner_timer"] > 0:
+        banner_font = pygame.font.Font(None, config.BOSS["banner_font_size"])
+        banner = banner_font.render(config.BOSS["banner_text"], True,
+                                    config.BOSS["banner_color"])
+        screen.blit(banner, (config.DISPLAY["width"] // 2 - banner.get_width() // 2,
+                             config.DISPLAY["height"] // 3))
+
 
 def init(game):
     """Initialize HUD state on game start."""
     game.hud = {
         "kills": 0,
         "passives": [],
+        "boss_banner_timer": 0.0,
+        "won": False,
     }

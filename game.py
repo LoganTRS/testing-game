@@ -135,10 +135,10 @@ class Game:
             weapon.update(self)
             projectile.update(self)
             xp.update(self)
-            hud.update(self)
+            hud.update(self, dt)
             upgrade.update(self)
             item.update(self)
-            renderer.update(self)
+            renderer.update(self, dt)
         elif self.state == "menu":
             menu.update(self)
 
@@ -171,11 +171,14 @@ class Game:
         """Render the game world."""
         screen.fill(config.RENDERER["background_color"])
         # Zombies: pixel-art placeholder (small square in the type's color).
+        # T10: the boss is drawn distinctly larger than a regular zombie.
         for z in self.zombies:
             color = config.ZOMBIE["types"][z["type"]]["color"]
             zx = int(z["x"])
             zy = int(z["y"])
-            pygame.draw.rect(screen, color, (zx - 4, zy - 4, 8, 8))
+            half = 12 if z["type"] == "boss" else 4
+            pygame.draw.rect(screen, color, (zx - half, zy - half,
+                                             half * 2, half * 2))
         # XP gems: pixel-art placeholder (small square in the config color).
         for gem in self.xp["gems"]:
             gx = int(gem["x"])
