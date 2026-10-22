@@ -430,6 +430,142 @@ def test_zombie_rendered():
     pygame.quit()
 
 
+def test_xp_math():
+    """XP math is a pure function: gem count + config → XP total."""
+    print("\n[xp] Pure XP math")
+    import xp
+
+    check("0 gems → 0 XP", xp.xp_total(0) == 0)
+    check("1 gem → gem_value XP", xp.xp_total(1) == config.XP["gem_value"])
+    check("5 gems → 5 * gem_value XP", xp.xp_total(5) == 5 * config.XP["gem_value"])
+    check("100 gems → 100 * gem_value XP", xp.xp_total(100) == 100 * config.XP["gem_value"])
+
+    # Independent of game state (pure function of gem count + config).
+    pygame.init()
+    game = Game(seed=42, headless=True)
+    game.start_run()
+    game.xp["current"] = 999
+    check("Pure: ignores existing game XP state", xp.xp_total(3) == 3 * config.XP["gem_value"])
+
+    pygame.quit()
+
+
+def test_xp_kill_drops_gem():
+    """Every zombie death drops 1 XP gem (elite/boss drop a handful)."""
+    print("\n[xp] Kill drops gem")
+    import zombie
+
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    # Walker death drops exactly 1 gem at the zombie's position.
+    # (Seek runs first, so the gem lands where the zombie moved to.)
+    game.zombies = [{"x": 100.0, "y": 100.0, "vx": 0.0, "vy": 0.0,
+                     "hp": 0, "type": "walker"}]
+    game.xp["gems"] = []
+    zombie.update(game, 1 / 60.0)
+    check("Walker death drops 1 gem", len(game.xp["gems"]) == 1)
+    check("Dead zombie is removed", len(game.zombies) == 0)
+    # Seek moves the zombie toward the player by speed*dt along the
+    # normalized direction, so the gem lands exactly there.
+    px, py = game.player["x"], game.player["y"]
+    dx, dy = px - 100.0, py - 100.0
+    length = math.hypot(dx, dy)
+    speed = config.ZOMBIE["types"]["walker"]["speed"]
+    check("Gem drops at the zombie's (post-seek) position",
+          game.xp["gems"][0]["x"] == 100.0 + dx / length * speed * (1 / 60.0)
+          and game.xp["gems"][0]["y"] == 100.0 + dy / length * speed * (1 / 60.0))
+
+    # Living zombies drop nothing.
+    game.zombies = [{"x": 100.0, "y": 100.0, "vx": 0.0, "vy": 0.0,
+                     "hp": 30, "type": "walker"}]
+    game.xp["gems"] = []
+    zombie.update(game, 1 / 60.0)
+    check("Living zombie drops no gem", len(game.xp["gems"]) == 0)
+
+    # Elite/boss drop a handful (stub, wired in T11).
+    game.zombies = [{"x": 100.0, "y": 100.0, "vx": 0.0, "vy": 0.0,
+                     "hp": 0, "type": "elite"}]
+    game.xp["gems"] = []
+    zombie.update(game, 1 / 60.0)
+    check("Elite death drops a handful of gems (stub)",
+          len(game.xp["gems"]) > 1)
+
+    game.zombies = [{"x": 100.0, "y": 100.0, "vx": 0.0, "vy": 0.0,
+                     "hp": 0, "type": "boss"}]
+    game.xp["gems"] = []
+    zombie.update(game, 1 / 60.0)
+    check("Boss death drops a handful of gems (stub)",
+          len(game.xp["gems"]) > 1)
+
+    pygame.quit()
+
+
+def test_xp_magnet_pickup():
+    """Gems within the magnet radius are pulled to the player; collected on contact."""
+    print("\n[xp] Magnet pickup")
+    import xp
+
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    dt = 1 / 60.0
+    radius = config.XP["gem_magnet_radius"]
+    value = config.XP["gem_value"]
+    px, py = game.player["x"], game.player["y"]
+
+    # Gem within the magnet radius is pulled toward the player.
+    game.xp["gems"] = [{"x": px + 30.0, "y": py, "vx": 0.0, "vy": 0.0}]
+    xp.update(game, dt)
+    check("Gem within magnet radius is pulled toward the player",
+          game.xp["gems"][0]["x"] < px + 30.0 and game.xp["gems"][0]["y"] == py)
+
+    # Gem outside the magnet radius is not pulled.
+    game.xp["gems"] = [{"x": px + radius + 50.0, "y": py, "vx": 0.0, "vy": 0.0}]
+    xp.update(game, dt)
+    check("Gem outside magnet radius is not pulled",
+          game.xp["gems"][0]["x"] == px + radius + 50.0)
+
+    # Gem on contact is collected and adds to the player's XP total.
+    game.xp["current"] = 0
+    game.xp["gems"] = [{"x": px, "y": py, "vx": 0.0, "vy": 0.0}]
+    xp.update(game, dt)
+    check("Gem on contact is collected", len(game.xp["gems"]) == 0)
+    check("Collected gem adds gem_value to XP total",
+          game.xp["current"] == value)
+
+    # Multiple gems on contact all add up.
+    game.xp["current"] = 0
+    game.xp["gems"] = [{"x": px, "y": py, "vx": 0.0, "vy": 0.0},
+                       {"x": px, "y": py, "vx": 0.0, "vy": 0.0}]
+    xp.update(game, dt)
+    check("Two gems on contact add 2 * gem_value",
+          game.xp["current"] == 2 * value and len(game.xp["gems"]) == 0)
+
+    pygame.quit()
+
+
+def test_xp_rendered():
+    """XP gems are rendered in their config color."""
+    print("\n[xp] Gems rendered")
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    game.xp["gems"] = [{"x": 100.0, "y": 100.0, "vx": 0.0, "vy": 0.0}]
+    game.render(screen)
+    color = pygame.Color(*config.ITEM["xp_gem"]["color"])
+    check("Gem pixel is drawn in its config color",
+          screen.get_at((100, 100)) == color)
+
+    pygame.quit()
+
+
 def test_menu_navigation():
     """Menu navigation works (Play starts a run, Quit exits)."""
     print("\n[menu] Menu navigation")
@@ -472,6 +608,10 @@ def main():
     test_zombie_seek()
     test_zombie_contact_damage()
     test_zombie_rendered()
+    test_xp_math()
+    test_xp_kill_drops_gem()
+    test_xp_magnet_pickup()
+    test_xp_rendered()
     test_menu_navigation()
 
     print("\n" + "=" * 60)

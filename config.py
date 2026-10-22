@@ -99,6 +99,8 @@ WEAPON = {
 # --- XP / Leveling ---
 XP = {
     "gem_magnet_radius": 60.0,
+    "gem_magnet_speed": 300.0,  # pixels per second
+    "gem_pickup_radius": 10.0,  # collect on contact
     "gem_value": 1,
     "level_curve": "linear",
     "max_level": 30,

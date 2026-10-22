@@ -2,10 +2,19 @@
 
 T3: walker zombie — stub spawn (fixed count), seek-the-player AI,
 contact damage with a short i-frame window. All stats from config.
+T6: zombie death drops XP gems (1 for normal types, a handful for
+elite/boss — stub, wired in T11).
 """
 import math
 
 import config
+
+# Stub gem drop counts per zombie type (elite/boss drop a handful;
+# the real drop wiring comes in T11).
+_GEM_DROPS = {
+    "elite": 5,
+    "boss": 10,
+}
 
 
 def spawn_walker(game, x, y):
@@ -66,10 +75,21 @@ def _contact_damage(game, dt):
             break
 
 
+def _kill_drops(game):
+    """Remove dead zombies and drop XP gems at their position."""
+    for z in list(game.zombies):
+        if z["hp"] <= 0:
+            game.zombies.remove(z)
+            for _ in range(_GEM_DROPS.get(z["type"], 1)):
+                game.xp["gems"].append({"x": z["x"], "y": z["y"],
+                                        "vx": 0.0, "vy": 0.0})
+
+
 def update(game, dt=1 / 60.0):
     """Update zombie state. Called each frame during a run."""
     _seek_player(game, dt)
     _contact_damage(game, dt)
+    _kill_drops(game)
 
 
 def init(game):

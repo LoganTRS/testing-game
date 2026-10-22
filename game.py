@@ -131,6 +131,13 @@ class Game:
             zx = int(z["x"])
             zy = int(z["y"])
             pygame.draw.rect(screen, color, (zx - 4, zy - 4, 8, 8))
+        # XP gems: pixel-art placeholder (small square in the config color).
+        for gem in self.xp["gems"]:
+            gx = int(gem["x"])
+            gy = int(gem["y"])
+            size = config.ITEM["xp_gem"]["size"]
+            pygame.draw.rect(screen, config.ITEM["xp_gem"]["color"],
+                             (gx - size // 2, gy - size // 2, size, size))
         # Player: pixel-art placeholder (small square at its position).
         px = int(self.player["x"])
         py = int(self.player["y"])
