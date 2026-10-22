@@ -5,6 +5,7 @@ T6: XP gems — kill drops gem, magnet pickup, pure XP math.
 import math
 
 import config
+import sfx
 import upgrade
 
 
@@ -66,6 +67,7 @@ def _check_level_up(game):
     game.upgrade["picked"] = None
     game.upgrade["options"] = upgrade.roll_options(
         upgrade.option_pool(), game.rng)
+    sfx.play(game, "level_up")
 
 
 def _magnet_pickup(game, dt):
@@ -92,6 +94,7 @@ def _magnet_pickup(game, dt):
             gem["y"] += dy / length * speed * dt
     if collected:
         game.xp["current"] += xp_total(collected)
+        sfx.play(game, "gem_pickup")
 
 
 def init(game):
