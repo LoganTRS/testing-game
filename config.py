@@ -114,6 +114,55 @@ WEAPON = {
             "aoe_radius": 60.0,  # explosion radius on impact
         },
     },
+    "max_level": 5,
+    # T12: weapon evolutions — unlock when the weapon and its paired
+    # passive are both at max level. Evolved stats override the base
+    # weapon stats (partial dict; missing keys fall back to base).
+    "evolutions": {
+        "pistol": {
+            "paired_passive": "damage",
+            "evolved_name": "Evolved: 9mm Pistol",
+            "evolved_stats": {
+                "damage": 20,
+                "fire_rate": 0.3,
+                "bullet_count": 2,
+            },
+        },
+        "knife": {
+            "paired_passive": "move_speed",
+            "evolved_name": "Evolved: Hunting Knife",
+            "evolved_stats": {
+                "damage": 40,
+                "fire_rate": 0.6,
+            },
+        },
+        "baton": {
+            "paired_passive": "magnet_radius",
+            "evolved_name": "Evolved: Baton Whirlwind",
+            "evolved_stats": {
+                "damage": 10,
+                "fire_rate": 0.2,
+                "whirlwind_radius": 120.0,
+            },
+        },
+        "sniper": {
+            "paired_passive": "cooldown",
+            "evolved_name": "Evolved: Sniper Rifle",
+            "evolved_stats": {
+                "damage": 150,
+                "fire_rate": 1.0,
+            },
+        },
+        "flare": {
+            "paired_passive": "damage",
+            "evolved_name": "Evolved: Flare",
+            "evolved_stats": {
+                "damage": 8,
+                "fire_rate": 0.05,
+                "aoe_radius": 100.0,
+            },
+        },
+    },
 }
 
 # --- XP / Leveling ---

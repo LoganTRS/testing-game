@@ -1,11 +1,13 @@
 """Upgrade module — level-up picks, rerolls, categories.
 
 T7: level-up pause + 3-card pick + 1 reroll.
+T12: real pick effects — passive levels, weapon levels, weapon evolutions.
 """
 import config
 
-# Option pool: 4 categories (config-driven). Real effects wired in T12;
-# the pool is stubbed for the pick UI.
+import weapon
+
+# Option pool: 4 categories (config-driven).
 _POOL = [
     # weapon level
     {"category": "weapon_level", "icon": "pistol", "name": "9mm Pistol Lv Up",
@@ -38,17 +40,17 @@ _POOL = [
      "description": "+20px gem magnet radius."},
     {"category": "passive", "icon": "cooldown", "name": "Cooldown Down",
      "description": "-5% weapon cooldown."},
-    # evolved weapon (stubbed for the pick UI; real effects wired in T12)
+    # evolved weapon
     {"category": "evolved_weapon", "icon": "pistol", "name": "Evolved: 9mm Pistol",
-     "description": "Evolve your 9mm Pistol (stub)."},
+     "description": "Evolve your 9mm Pistol."},
     {"category": "evolved_weapon", "icon": "knife", "name": "Evolved: Hunting Knife",
-     "description": "Evolve your Hunting Knife (stub)."},
+     "description": "Evolve your Hunting Knife."},
     {"category": "evolved_weapon", "icon": "baton", "name": "Evolved: Baton Whirlwind",
-     "description": "Evolve your Baton Whirlwind (stub)."},
+     "description": "Evolve your Baton Whirlwind."},
     {"category": "evolved_weapon", "icon": "sniper", "name": "Evolved: Sniper Rifle",
-     "description": "Evolve your Sniper Rifle (stub)."},
+     "description": "Evolve your Sniper Rifle."},
     {"category": "evolved_weapon", "icon": "flare", "name": "Evolved: Flare",
-     "description": "Evolve your Flare (stub)."},
+     "description": "Evolve your Flare."},
 ]
 
 
@@ -69,6 +71,43 @@ def picks_for_level(level):
         return 1
     extra = (level - cfg["multi_pick_level"]) // cfg["picks_per_extra_level"]
     return min(1 + extra, cfg["max_picks"])
+
+
+def apply_pick(game, passive_name):
+    """T12: apply a passive pick — bump its level in the player's state dict.
+
+    Levels cap at the config max_level. The passive's effect is applied
+    each frame by the player / xp / weapon modules reading this state.
+    """
+    max_level = config.UPGRADE["passives"][passive_name]["max_level"]
+    game.player["passives"][passive_name] = min(
+        game.player["passives"][passive_name] + 1, max_level)
+
+
+def apply_weapon_level_pick(game, weapon_name):
+    """T12: apply a weapon-level pick — bump the weapon's level.
+
+    Levels cap at the config WEAPON max_level.
+    """
+    max_level = config.WEAPON["max_level"]
+    for w in game.weapons:
+        if w["type"] == weapon_name:
+            w["level"] = min(w["level"] + 1, max_level)
+            break
+
+
+def apply_evolved_pick(game, weapon_name):
+    """T12: apply an evolved-weapon pick — evolve the weapon if eligible.
+
+    The weapon and its paired passive must both be at max level
+    (config values). If not eligible, the pick is a no-op.
+    """
+    for w in game.weapons:
+        if w["type"] == weapon_name:
+            if not w["evolved"] and weapon.can_evolve(
+                    weapon_name, w["level"], game.player["passives"]):
+                w["evolved"] = True
+            break
 
 
 def update(game):
