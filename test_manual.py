@@ -430,6 +430,163 @@ def test_zombie_rendered():
     pygame.quit()
 
 
+def test_weapon_targeting():
+    """Nearest-zombie targeting is a pure function of the zombie list."""
+    print("\n[weapon] Nearest-zombie targeting")
+    import weapon
+
+    # Three zombies at known positions; the middle one is closest.
+    zombies = [
+        {"x": 100.0, "y": 100.0, "vx": 0.0, "vy": 0.0, "hp": 30, "type": "walker"},
+        {"x": 110.0, "y": 100.0, "vx": 0.0, "vy": 0.0, "hp": 30, "type": "walker"},
+        {"x": 300.0, "y": 100.0, "vx": 0.0, "vy": 0.0, "hp": 30, "type": "walker"},
+    ]
+    target = weapon.nearest_zombie((108.0, 100.0), zombies)
+    check("Targets the nearest zombie", target is zombies[1])
+
+    # Diagonal distance is compared correctly (not per-axis).
+    zombies = [
+        {"x": 100.0, "y": 0.0, "vx": 0.0, "vy": 0.0, "hp": 30, "type": "walker"},
+        {"x": 100.0, "y": 100.0, "vx": 0.0, "vy": 0.0, "hp": 30, "type": "walker"},
+    ]
+    target = weapon.nearest_zombie((100.0, 90.0), zombies)
+    check("Targets the closer of two zombies", target is zombies[1])
+
+    # No zombies → no target.
+    check("No zombies → no target", weapon.nearest_zombie((0.0, 0.0), []) is None)
+
+    # A zombie exactly at the shooter's position is the target.
+    zombies = [{"x": 50.0, "y": 50.0, "vx": 0.0, "vy": 0.0, "hp": 30, "type": "walker"}]
+    target = weapon.nearest_zombie((50.0, 50.0), zombies)
+    check("Zombie at shooter position is targeted", target is zombies[0])
+
+
+def test_weapon_cooldown():
+    """Fire cooldown is honored: given a timestamp + config, assert whether it fires."""
+    print("\n[weapon] Fire cooldown")
+    import weapon
+
+    fire_rate = config.WEAPON["types"]["pistol"]["fire_rate"]
+
+    # Never fired → fires immediately.
+    check("Fires when never fired", weapon.should_fire(None, 0.0, fire_rate))
+    # Just fired → on cooldown.
+    check("On cooldown right after firing", not weapon.should_fire(0.0, 0.1, fire_rate))
+    # Cooldown elapsed → fires again.
+    check("Fires once cooldown elapsed", weapon.should_fire(0.0, fire_rate, fire_rate))
+    # Slightly before the cooldown → still on cooldown.
+    check("Still on cooldown just before it elapses",
+          not weapon.should_fire(0.0, fire_rate - 0.01, fire_rate))
+
+
+def test_pistol_auto_fire():
+    """Pistol auto-fires at the nearest zombie on its cooldown (no shoot button)."""
+    print("\n[weapon] Pistol auto-fire")
+    import weapon
+    import projectile
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    dt = 1 / 60.0
+    pistol = config.WEAPON["types"]["pistol"]
+
+    # One zombie to the right of the player.
+    game.zombies = [{"x": game.player["x"] + 200.0, "y": game.player["y"],
+                     "vx": 0.0, "vy": 0.0, "hp": 30, "type": "walker"}]
+
+    # First frame: never fired → fires immediately, spawning a projectile.
+    weapon.update(game, dt)
+    check("Pistol fires on the first frame (no shoot button)",
+          len(game.projectiles) == 1)
+    check("Pistol is the active weapon",
+          game.weapons and game.weapons[0]["type"] == "pistol")
+    check("Cooldown is recorded after firing",
+          game.weapons[0]["last_fired"] is not None)
+
+    # Next frame: still on cooldown → no second projectile.
+    weapon.update(game, dt)
+    check("No second shot while on cooldown", len(game.projectiles) == 1)
+
+    # After the cooldown elapses, the pistol fires again.
+    game.weapons[0]["last_fired"] = game.run_time - pistol["fire_rate"]
+    weapon.update(game, dt)
+    check("Pistol fires again once the cooldown elapses",
+          len(game.projectiles) == 2)
+
+    # No zombies → no target → no fire.
+    game.projectiles = []
+    game.zombies = []
+    weapon.update(game, dt)
+    check("No zombies → no projectile", len(game.projectiles) == 0)
+
+    pygame.quit()
+
+
+def test_projectile_travel_and_damage():
+    """A projectile spawns, travels at config speed, and deals config damage on hit."""
+    print("\n[projectile] Travel + damage")
+    import weapon
+    import projectile
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    dt = 1 / 60.0
+    pistol = config.WEAPON["types"]["pistol"]
+    speed = pistol["bullet_speed"]
+    damage = pistol["damage"]
+
+    # One zombie to the right of the player.
+    game.zombies = [{"x": game.player["x"] + 200.0, "y": game.player["y"],
+                     "vx": 0.0, "vy": 0.0, "hp": 30, "type": "walker"}]
+    weapon.update(game, dt)
+    check("A projectile was spawned", len(game.projectiles) == 1)
+
+    p = game.projectiles[0]
+    check("Projectile carries the pistol's config damage", p["damage"] == damage)
+    check("Projectile aims at the target (moves right)", p["vx"] > 0 and p["vy"] == 0)
+
+    # Travel: one frame moves the projectile at config speed.
+    x0, y0 = p["x"], p["y"]
+    projectile.update(game, dt)
+    check("Projectile travels at config speed",
+          abs(math.hypot(p["x"] - x0, p["y"] - y0) - speed * dt) < 1e-6)
+
+    # Damage: place the projectile on the zombie → the hit deals config damage.
+    p["x"] = game.zombies[0]["x"]
+    p["y"] = game.zombies[0]["y"]
+    hp_before = game.zombies[0]["hp"]
+    projectile.update(game, dt)
+    check("Hit deals the pistol's config damage",
+          game.zombies[0]["hp"] == hp_before - damage)
+    check("Hit projectile is removed", len(game.projectiles) == 0)
+
+    # A lethal hit removes the zombie.
+    game.zombies = [{"x": 100.0, "y": 100.0, "vx": 0.0, "vy": 0.0,
+                     "hp": damage, "type": "walker"}]
+    game.projectiles = [{"x": 100.0, "y": 100.0, "vx": 0.0, "vy": 0.0,
+                         "damage": damage}]
+    projectile.update(game, dt)
+    check("Lethal hit removes the zombie", len(game.zombies) == 0)
+
+    pygame.quit()
+
+
+def test_pistol_stats_from_config():
+    """Pistol stats (fire rate, damage, projectile speed) are config dict values."""
+    print("\n[config] Pistol stats are config dict values")
+    pistol = config.WEAPON["types"]["pistol"]
+    check("Pistol fire rate is a config dict value", "fire_rate" in pistol)
+    check("Pistol damage is a config dict value", "damage" in pistol)
+    check("Pistol projectile speed is a config dict value", "bullet_speed" in pistol)
+    check("Pistol fire rate is positive", pistol["fire_rate"] > 0)
+    check("Pistol damage is positive", pistol["damage"] > 0)
+    check("Pistol projectile speed is positive", pistol["bullet_speed"] > 0)
+
+
 def test_menu_navigation():
     """Menu navigation works (Play starts a run, Quit exits)."""
     print("\n[menu] Menu navigation")
@@ -472,6 +629,11 @@ def main():
     test_zombie_seek()
     test_zombie_contact_damage()
     test_zombie_rendered()
+    test_weapon_targeting()
+    test_weapon_cooldown()
+    test_pistol_auto_fire()
+    test_projectile_travel_and_damage()
+    test_pistol_stats_from_config()
     test_menu_navigation()
 
     print("\n" + "=" * 60)
