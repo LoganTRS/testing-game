@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+best_run.json
+test_best_run*.json

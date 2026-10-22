@@ -21,6 +21,8 @@ os.environ["SDL_AUDIODRIVER"] = "dummy"
 import pygame
 import config
 from game import Game
+import zombie
+import xp
 
 PASS = 0
 FAIL = 0
@@ -1698,6 +1700,358 @@ def test_menu_navigation():
     pygame.quit()
 
 
+def test_sfx_config():
+    """SFX config is a plain dict with all 5 SFX entries."""
+    print("\n[sfx] Config is a plain dict with all 5 SFX entries")
+    check("SFX is dict", isinstance(config.SFX, dict))
+    check("SFX has hit", "hit" in config.SFX)
+    check("SFX has kill", "kill" in config.SFX)
+    check("SFX has level_up", "level_up" in config.SFX)
+    check("SFX has gem_pickup", "gem_pickup" in config.SFX)
+    check("SFX has boss_roar", "boss_roar" in config.SFX)
+    check("SFX hit is a string", isinstance(config.SFX["hit"], str))
+    check("SFX kill is a string", isinstance(config.SFX["kill"], str))
+    check("SFX level_up is a string", isinstance(config.SFX["level_up"], str))
+    check("SFX gem_pickup is a string", isinstance(config.SFX["gem_pickup"], str))
+    check("SFX boss_roar is a string", isinstance(config.SFX["boss_roar"], str))
+
+
+def test_sfx_module():
+    """SFX module: init sets state, play is a no-op in headless."""
+    print("\n[sfx] Module init and headless no-op")
+    import sfx
+    pygame.init()
+    game = Game(seed=42, headless=True)
+    check("Game has sfx state", game.sfx is not None)
+    check("SFX enabled is False in headless", game.sfx["enabled"] is False)
+    # play() should be a no-op in headless (no crash, no exception)
+    sfx.play(game, "hit")
+    sfx.play(game, "kill")
+    sfx.play(game, "level_up")
+    sfx.play(game, "gem_pickup")
+    sfx.play(game, "boss_roar")
+    check("SFX play is a no-op in headless (no crash)", True)
+    pygame.quit()
+
+
+def test_sfx_triggers():
+    """SFX triggers fire on hit, kill, level-up, gem pickup, boss roar."""
+    print("\n[sfx] Triggers fire on the right events")
+    import sfx
+    pygame.init()
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    # Track which SFX were played by monkeypatching sfx.play.
+    played = []
+    original_play = sfx.play
+    def tracking_play(g, name):
+        played.append(name)
+    sfx.play = tracking_play
+
+    # Hit: zombie contact damage.
+    game.player["x"] = 100.0
+    game.player["y"] = 100.0
+    game.player["invuln_timer"] = 0.0
+    game.zombies.append({"x": 100.0, "y": 100.0, "hp": 30, "type": "walker"})
+    zombie.update(game, 1/60.0)
+    check("Hit SFX plays on contact damage", "hit" in played)
+
+    # Kill: zombie death.
+    played.clear()
+    game.zombies.append({"x": 200.0, "y": 200.0, "hp": 0, "type": "walker"})
+    zombie.update(game, 1/60.0)
+    check("Kill SFX plays on zombie death", "kill" in played)
+
+    # Level-up: XP crosses threshold.
+    played.clear()
+    game.xp["current"] = 100  # enough XP to trigger level-up
+    xp.update(game, 1/60.0)
+    check("Level-up SFX plays on level-up", "level_up" in played)
+
+    # Gem pickup: gem collected by magnet.
+    played.clear()
+    game.state = "playing"
+    game.xp["gems"].append({"x": game.player["x"], "y": game.player["y"],
+                            "vx": 0.0, "vy": 0.0})
+    xp.update(game, 1/60.0)
+    check("Gem pickup SFX plays on gem collection", "gem_pickup" in played)
+
+    # Boss roar: boss spawn.
+    played.clear()
+    game.run_time = config.BOSS["spawn_time"]
+    game._boss_spawned = False
+    zombie.update(game, 1/60.0)
+    check("Boss roar SFX plays on boss spawn", "boss_roar" in played)
+
+    sfx.play = original_play
+    pygame.quit()
+
+
+def test_best_run_save_load():
+    """Best-run score saves to a single file and loads on launch."""
+    print("\n[best_run] Save and load")
+    import best_run
+    import json
+    import os
+
+    # Use a temp file for testing.
+    test_file = "test_best_run.json"
+    original_file = config.BEST_RUN["file"]
+    config.BEST_RUN["file"] = test_file
+
+    # Clean up any existing test file.
+    if os.path.exists(test_file):
+        os.remove(test_file)
+
+    # Load with no file: returns 0.0.
+    check("Load with no file returns 0.0", best_run.load_best() == 0.0)
+
+    # Save a time.
+    check("Save returns True for new best", best_run.save_best(120.0) is True)
+
+    # Load the saved time.
+    check("Load returns the saved time", abs(best_run.load_best() - 120.0) < 1e-6)
+
+    # Save a lower time: should not overwrite.
+    check("Save returns False for lower time", best_run.save_best(60.0) is False)
+    check("Load still returns the original best", abs(best_run.load_best() - 120.0) < 1e-6)
+
+    # Save a higher time: should overwrite.
+    check("Save returns True for higher time", best_run.save_best(180.0) is True)
+    check("Load returns the new best", abs(best_run.load_best() - 180.0) < 1e-6)
+
+    # is_new_best.
+    check("is_new_best True for higher time", best_run.is_new_best(200.0) is True)
+    check("is_new_best False for lower time", best_run.is_new_best(100.0) is False)
+
+    # File is a single JSON file.
+    check("Best-run file exists", os.path.exists(test_file))
+    with open(test_file, "r") as f:
+        data = json.load(f)
+    check("Best-run file has best_time key", "best_time" in data)
+
+    # Clean up.
+    os.remove(test_file)
+    config.BEST_RUN["file"] = original_file
+
+
+def test_best_run_loaded_on_launch():
+    """Best-run score is loaded on game construction."""
+    print("\n[best_run] Loaded on launch")
+    import best_run
+    import os
+
+    test_file = "test_best_run_launch.json"
+    original_file = config.BEST_RUN["file"]
+    config.BEST_RUN["file"] = test_file
+
+    if os.path.exists(test_file):
+        os.remove(test_file)
+
+    # Save a best time before constructing the game.
+    best_run.save_best(300.0)
+
+    pygame.init()
+    game = Game(seed=42, headless=True)
+    check("Game has best_run state", game.best_run is not None)
+    check("Best time loaded on launch", abs(game.best_run["best_time"] - 300.0) < 1e-6)
+    pygame.quit()
+
+    os.remove(test_file)
+    config.BEST_RUN["file"] = original_file
+
+
+def test_end_screen_config():
+    """End screen config is a plain dict with all required fields."""
+    print("\n[end_screen] Config is a plain dict with all required fields")
+    check("END_SCREEN is dict", isinstance(config.END_SCREEN, dict))
+    check("END_SCREEN has title_font_size", "title_font_size" in config.END_SCREEN)
+    check("END_SCREEN has stat_font_size", "stat_font_size" in config.END_SCREEN)
+    check("END_SCREEN has option_font_size", "option_font_size" in config.END_SCREEN)
+    check("END_SCREEN has title_color", "title_color" in config.END_SCREEN)
+    check("END_SCREEN has stat_color", "stat_color" in config.END_SCREEN)
+    check("END_SCREEN has best_color", "best_color" in config.END_SCREEN)
+    check("END_SCREEN has options", "options" in config.END_SCREEN)
+    check("END_SCREEN options is list", isinstance(config.END_SCREEN["options"], list))
+    check("END_SCREEN has Play again", "Play again" in config.END_SCREEN["options"])
+    check("END_SCREEN has Main menu", "Main menu" in config.END_SCREEN["options"])
+
+
+def test_end_screen_rendered():
+    """End screen renders with title, stats, best-run, and options."""
+    print("\n[end_screen] Rendered with title, stats, best-run, and options")
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    # Simulate a run that ended (loss).
+    game.state = "game_over"
+    game.hud["won"] = False
+    game.hud["kills"] = 42
+    game.xp["level"] = 5
+    game.run_time = 180.0  # 3 minutes
+    game.best_run = {"best_time": 300.0, "is_new_best": False}
+
+    game.render(screen)
+
+    # The end screen should have rendered (no crash).
+    check("End screen renders without crash", True)
+
+    # Verify the screen is not blank (has some non-background pixels).
+    bg = pygame.Color(*config.RENDERER["background_color"])
+    non_bg = 0
+    for x in range(0, config.DISPLAY["width"], 10):
+        for y in range(0, config.DISPLAY["height"], 10):
+            if screen.get_at((x, y)) != bg:
+                non_bg += 1
+    check("End screen has rendered content", non_bg > 0)
+
+    pygame.quit()
+
+
+def test_end_screen_win():
+    """End screen shows 'You survived' on a win."""
+    print("\n[end_screen] Win title")
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    game.state = "game_over"
+    game.hud["won"] = True
+    game.hud["kills"] = 100
+    game.xp["level"] = 10
+    game.run_time = 1200.0  # 20 minutes
+    game.best_run = {"best_time": 600.0, "is_new_best": True}
+
+    game.render(screen)
+    check("Win end screen renders without crash", True)
+
+    pygame.quit()
+
+
+def test_end_screen_play_again():
+    """'Play again' restarts the run immediately."""
+    print("\n[end_screen] Play again restarts the run")
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    game.state = "game_over"
+    game.hud["won"] = False
+    game.hud["kills"] = 10
+    game.xp["level"] = 3
+    game.run_time = 60.0
+    game.best_run = {"best_time": 120.0, "is_new_best": False}
+
+    # Simulate pressing Enter (Play again is the first option).
+    game.menu["end_selected"] = 0
+    event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN)
+    game.handle_event(event)
+    check("Play again restarts the run", game.state == "playing")
+    check("Run time reset to 0", game.run_time == 0.0)
+    check("Kills reset to 0", game.hud["kills"] == 0)
+
+    pygame.quit()
+
+
+def test_end_screen_main_menu():
+    """'Main menu' returns to the menu."""
+    print("\n[end_screen] Main menu returns to the menu")
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    game.state = "game_over"
+    game.hud["won"] = False
+    game.hud["kills"] = 10
+    game.xp["level"] = 3
+    game.run_time = 60.0
+    game.best_run = {"best_time": 120.0, "is_new_best": False}
+
+    # Simulate pressing DOWN then Enter (Main menu is the second option).
+    game.menu["end_selected"] = 1
+    event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN)
+    game.handle_event(event)
+    check("Main menu returns to the menu", game.state == "menu")
+
+    pygame.quit()
+
+
+def test_end_screen_navigation():
+    """End screen option navigation works (UP/DOWN cycle)."""
+    print("\n[end_screen] Option navigation")
+    pygame.init()
+    game = Game(seed=42, headless=True)
+    game.start_run()
+    game.state = "game_over"
+    game.hud["won"] = False
+    game.hud["kills"] = 0
+    game.xp["level"] = 1
+    game.run_time = 0.0
+    game.best_run = {"best_time": 0.0, "is_new_best": False}
+
+    # Initial selection is 0.
+    check("Initial end screen selection is 0", game.menu.get("end_selected", 0) == 0)
+
+    # Press DOWN.
+    event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_DOWN)
+    game.handle_event(event)
+    check("DOWN moves selection to 1", game.menu["end_selected"] == 1)
+
+    # Press DOWN again (wraps to 0).
+    event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_DOWN)
+    game.handle_event(event)
+    check("DOWN wraps selection to 0", game.menu["end_selected"] == 0)
+
+    # Press UP (wraps to 1).
+    event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_UP)
+    game.handle_event(event)
+    check("UP wraps selection to 1", game.menu["end_selected"] == 1)
+
+    pygame.quit()
+
+
+def test_best_run_saved_on_game_over():
+    """Best-run score is saved when the run ends."""
+    print("\n[best_run] Saved on game over")
+    import best_run
+    import os
+
+    test_file = "test_best_run_gameover.json"
+    original_file = config.BEST_RUN["file"]
+    config.BEST_RUN["file"] = test_file
+
+    if os.path.exists(test_file):
+        os.remove(test_file)
+
+    pygame.init()
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    # Simulate a run that ends with a loss.
+    game.run_time = 90.0
+    game.player["hp"] = 0
+    game.state = "playing"
+
+    # Run one update frame — should transition to game_over and save best.
+    # Note: update() adds dt to run_time, so the saved time is 90.0 + dt.
+    dt = 1/60.0
+    game.update(dt)
+    check("Game over after player death", game.state == "game_over")
+    expected_time = 90.0 + dt
+    check("Best run saved", abs(best_run.load_best() - expected_time) < 1e-6)
+
+    pygame.quit()
+
+    os.remove(test_file)
+    config.BEST_RUN["file"] = original_file
+
+
 def main():
     print("=" * 60)
     print("test_manual.py — Zombie Survival scaffold smoke test")
@@ -1744,6 +2098,18 @@ def main():
     test_boss_win()
     test_boss_rendered_distinctly()
     test_menu_navigation()
+    test_sfx_config()
+    test_sfx_module()
+    test_sfx_triggers()
+    test_best_run_save_load()
+    test_best_run_loaded_on_launch()
+    test_end_screen_config()
+    test_end_screen_rendered()
+    test_end_screen_win()
+    test_end_screen_play_again()
+    test_end_screen_main_menu()
+    test_end_screen_navigation()
+    test_best_run_saved_on_game_over()
 
     print("\n" + "=" * 60)
     total = PASS + FAIL

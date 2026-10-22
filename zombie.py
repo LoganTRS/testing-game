@@ -9,6 +9,7 @@ from config.
 import math
 
 import config
+import sfx
 
 # Stub gem drop counts per zombie type (elite/boss drop a handful;
 # the real drop wiring comes in T11).
@@ -77,9 +78,10 @@ def _spawn_boss(game):
     game._boss_spawned = True
     _spawn_zombie(game, config.DISPLAY["width"] / 2,
                   config.DISPLAY["height"] / 2, "boss")
-    # Telegraph: banner + screen shake.
+    # Telegraph: banner + screen shake + boss roar SFX.
     game.hud["boss_banner_timer"] = config.BOSS["banner_duration"]
     game.renderer["shake_timer"] = config.BOSS["shake_duration"]
+    sfx.play(game, "boss_roar")
 
 
 def _continuous_spawn(game, dt):
@@ -150,6 +152,7 @@ def _contact_damage(game, dt):
             cfg = config.ZOMBIE["types"][z["type"]]
             p["hp"] -= cfg["contact_damage"]
             p["invuln_timer"] = cfg["i_frame_duration"]
+            sfx.play(game, "hit")
             break
 
 
@@ -162,6 +165,7 @@ def _kill_drops(game):
         if z["hp"] <= 0:
             game.zombies.remove(z)
             game.hud["kills"] += 1
+            sfx.play(game, "kill")
             for _ in range(_GEM_DROPS.get(z["type"], 1)):
                 game.xp["gems"].append({"x": z["x"], "y": z["y"],
                                         "vx": 0.0, "vy": 0.0})

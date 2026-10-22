@@ -18,6 +18,8 @@ import menu
 import upgrade
 import item
 import renderer
+import sfx
+import best_run
 
 
 class Game:
@@ -35,6 +37,7 @@ class Game:
         self.running = True
         self.frame = 0
         self.run_time = 0.0  # seconds elapsed in current run
+        self._best_saved = False  # T13: guard so best-run saves once per run
 
         # Module state (initialized by each module's init)
         self.player = None
@@ -47,12 +50,14 @@ class Game:
         self.upgrade = None
         self.items = None
         self.renderer = None
+        self.sfx = None
+        self.best_run = None
 
         # Initialize all modules
         self._init_modules()
 
     def _init_modules(self):
-        """Call init on all 12 modules, passing self as the shared context."""
+        """Call init on all modules, passing self as the shared context."""
         player.init(self)
         zombie.init(self)
         weapon.init(self)
@@ -63,12 +68,26 @@ class Game:
         upgrade.init(self)
         item.init(self)
         renderer.init(self)
+        sfx.init(self)
+        self._load_best_run()
+
+    def _load_best_run(self):
+        """Load the best-run score from the persistence file on launch."""
+        self.best_run = {"best_time": best_run.load_best()}
+
+    def _save_best_run(self):
+        """Save the current run's time as the best if it exceeds the stored best."""
+        was_new_best = best_run.is_new_best(self.run_time)
+        best_run.save_best(self.run_time)
+        self.best_run["best_time"] = max(self.best_run["best_time"], self.run_time)
+        self.best_run["is_new_best"] = was_new_best
 
     def start_run(self):
         """Start a new run from the menu."""
         self.state = "playing"
         self.run_time = 0.0
         self.frame = 0
+        self._best_saved = False
         # Re-initialize run state
         player.init(self)
         zombie.init(self)
@@ -139,6 +158,14 @@ class Game:
             upgrade.update(self)
             item.update(self)
             renderer.update(self, dt)
+            # T13: player death ends the run with a loss.
+            if self.player["hp"] <= 0 and self.state == "playing":
+                self.state = "game_over"
+                self.hud["won"] = False
+            # T13: save the best run when the run ends (win or lose).
+            if self.state == "game_over" and not self._best_saved:
+                self._best_saved = True
+                self._save_best_run()
         elif self.state == "menu":
             menu.update(self)
 
@@ -150,6 +177,8 @@ class Game:
             self._render_game(screen)
             if self.state == "level_up":
                 self._render_level_up_overlay(screen)
+        elif self.state == "game_over":
+            self._render_end_screen(screen)
 
     def _render_menu(self, screen):
         """Render the main menu."""
@@ -233,6 +262,52 @@ class Game:
             True, (200, 200, 200))
         screen.blit(reroll, (w // 2 - reroll.get_width() // 2, h * 3 // 4))
 
+    def _render_end_screen(self, screen):
+        """T13: end screen — 'You survived X minutes', stats, best-run, options."""
+        w, h = config.DISPLAY["width"], config.DISPLAY["height"]
+        screen.fill(config.RENDERER["background_color"])
+
+        es = config.END_SCREEN
+        # Title: "You survived X minutes" (or "You were overwhelmed").
+        minutes = int(self.run_time // 60)
+        if self.hud.get("won", False):
+            title_text = "You survived {} minutes".format(minutes)
+        else:
+            title_text = "You were overwhelmed after {} minutes".format(minutes)
+        title_font = pygame_font(es["title_font_size"])
+        title = title_font.render(title_text, True, es["title_color"])
+        screen.blit(title, (w // 2 - title.get_width() // 2, h // 6))
+
+        # Stats: time, kills, level.
+        stat_font = pygame_font(es["stat_font_size"])
+        stats = [
+            "Time: {}".format(hud.format_timer(self.run_time)),
+            "Kills: {}".format(self.hud["kills"]),
+            "Level: {}".format(self.xp["level"]),
+        ]
+        y = h // 3
+        for stat in stats:
+            text = stat_font.render(stat, True, es["stat_color"])
+            screen.blit(text, (w // 2 - text.get_width() // 2, y))
+            y += 40
+
+        # Best-run comparison.
+        best_font = pygame_font(es["stat_font_size"])
+        best_text = "Best: {}".format(hud.format_timer(self.best_run["best_time"]))
+        if self.best_run.get("is_new_best", False):
+            best_text += " (NEW BEST!)"
+        best = best_font.render(best_text, True, es["best_color"])
+        screen.blit(best, (w // 2 - best.get_width() // 2, y + 10))
+
+        # Options: Play again, Main menu.
+        opt_font = pygame_font(es["option_font_size"])
+        selected = self.menu.get("end_selected", 0)
+        for i, option in enumerate(es["options"]):
+            color = es["selected_color"] if i == selected else es["option_color"]
+            text = opt_font.render(option, True, color)
+            screen.blit(text, (w // 2 - text.get_width() // 2,
+                               h * 2 // 3 + i * 50))
+
     def handle_event(self, event):
         """Handle a pygame event. Returns True if the game should quit."""
         if event.type == pygame.QUIT:
@@ -270,6 +345,19 @@ class Game:
                     self.start_run()
                 elif event.key == pygame.K_q:
                     self.state = "menu"
+        elif self.state == "game_over":
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_UP or event.key == pygame.K_w:
+                    self.menu["end_selected"] = (self.menu.get("end_selected", 0) - 1) % len(config.END_SCREEN["options"])
+                elif event.key == pygame.K_DOWN or event.key == pygame.K_s:
+                    self.menu["end_selected"] = (self.menu.get("end_selected", 0) + 1) % len(config.END_SCREEN["options"])
+                elif event.key == pygame.K_RETURN or event.key == pygame.K_SPACE:
+                    option = config.END_SCREEN["options"][self.menu.get("end_selected", 0)]
+                    if option == "Play again":
+                        self.start_run()
+                    elif option == "Main menu":
+                        self.state = "menu"
+                        self.menu["selected"] = 0
 
         return False
 

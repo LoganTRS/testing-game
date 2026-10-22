@@ -294,3 +294,32 @@ RENDERER = {
     "camera_shake_magnitude": 5,
     "camera_shake_duration": 0.2,
 }
+
+# --- SFX (T13: hit, kill, level-up, gem pickup, boss roar — no music in v1) ---
+# File paths are relative to the project root. Missing files are silently
+# skipped (the game still runs without audio).
+SFX = {
+    "hit": "sfx/hit.wav",
+    "kill": "sfx/kill.wav",
+    "level_up": "sfx/level_up.wav",
+    "gem_pickup": "sfx/gem_pickup.wav",
+    "boss_roar": "sfx/boss_roar.wav",
+}
+
+# --- End Screen (T13: "You survived X minutes", Play again, Main menu) ---
+END_SCREEN = {
+    "title_font_size": 48,
+    "stat_font_size": 28,
+    "option_font_size": 32,
+    "title_color": (255, 255, 255),
+    "stat_color": (200, 200, 200),
+    "best_color": (255, 200, 100),
+    "option_color": (200, 200, 200),
+    "selected_color": (255, 255, 0),
+    "options": ["Play again", "Main menu"],
+}
+
+# --- Best Run (T13: single-file persistence) ---
+BEST_RUN = {
+    "file": "best_run.json",
+}
