@@ -66,6 +66,16 @@ def test_config_dicts():
     check("MENU options is list", isinstance(config.MENU["options"], list))
     check("ZOMBIE types is dict", isinstance(config.ZOMBIE["types"], dict))
     check("WEAPON types is dict", isinstance(config.WEAPON["types"], dict))
+    check("Walker contact_damage is a config dict value",
+          "contact_damage" in config.ZOMBIE["types"]["walker"])
+    check("Walker i-frame duration is a config dict value",
+          "i_frame_duration" in config.ZOMBIE["types"]["walker"])
+    check("Walker speed is a config dict value",
+          "speed" in config.ZOMBIE["types"]["walker"])
+    check("Walker HP is a config dict value",
+          "hp" in config.ZOMBIE["types"]["walker"])
+    check("Stub spawn count is a config dict value",
+          "initial_spawn_count" in config.ZOMBIE)
 
 
 def test_game_construction():
@@ -225,6 +235,7 @@ def test_player_facing():
     game.start_run()
 
     # No zombies → facing falls back to last-move direction
+    game.zombies = []
     game.player["x"] = config.DISPLAY["width"] / 2
     game.player["y"] = config.DISPLAY["height"] / 2
     set_keys([pygame.K_d])
@@ -287,6 +298,138 @@ def test_player_rendered():
     pygame.quit()
 
 
+def test_zombie_spawn():
+    """Stub spawning: a small fixed count of walkers spawns at run start."""
+    print("\n[zombie] Stub spawn")
+    import zombie
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    count = config.ZOMBIE["initial_spawn_count"]
+    check("Stub spawn count from config", len(game.zombies) == count)
+    check("All spawned zombies are walkers",
+          all(z["type"] == "walker" for z in game.zombies))
+    check("Walkers spawn with full HP from config",
+          all(z["hp"] == config.ZOMBIE["types"]["walker"]["hp"] for z in game.zombies))
+    check("Walkers spawn on the spawn ring (config radius from center)",
+          all(abs(math.hypot(z["x"] - config.DISPLAY["width"] / 2,
+                             z["y"] - config.DISPLAY["height"] / 2)
+                  - config.ZOMBIE["spawn_ring_radius"]) < 1e-6
+              for z in game.zombies))
+
+    pygame.quit()
+
+
+def test_zombie_seek():
+    """Walker AI: moves toward the player at config speed."""
+    print("\n[zombie] Seek-the-player AI")
+    import zombie
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    dt = 1 / 60.0
+    speed = config.ZOMBIE["types"]["walker"]["speed"]
+
+    # Place one walker to the right of the player.
+    game.zombies = [{"x": game.player["x"] + 100.0, "y": game.player["y"],
+                     "vx": 0.0, "vy": 0.0, "hp": 30, "type": "walker"}]
+    zombie.update(game, dt)
+    check("Walker moves left toward the player",
+          abs(game.zombies[0]["x"] - (game.player["x"] + 100.0 - speed * dt)) < 1e-6
+          and game.zombies[0]["y"] == game.player["y"])
+
+    # Diagonal: walker up-right of the player, normalized speed.
+    game.zombies[0]["x"] = game.player["x"] + 100.0
+    game.zombies[0]["y"] = game.player["y"] - 100.0
+    zombie.update(game, dt)
+    expected = speed * dt / math.sqrt(2)
+    check("Walker diagonal seek is normalized (same total speed)",
+          abs(game.zombies[0]["x"] - (game.player["x"] + 100.0 - expected)) < 1e-6
+          and abs(game.zombies[0]["y"] - (game.player["y"] - 100.0 + expected)) < 1e-6)
+
+    # Walker already at the player's position → no movement.
+    game.zombies[0]["x"] = game.player["x"]
+    game.zombies[0]["y"] = game.player["y"]
+    zombie.update(game, dt)
+    check("Walker at player position does not move",
+          game.zombies[0]["x"] == game.player["x"]
+          and game.zombies[0]["y"] == game.player["y"])
+
+    pygame.quit()
+
+
+def test_zombie_contact_damage():
+    """Contact with a walker deals damage, with an i-frame window."""
+    print("\n[zombie] Contact damage + i-frames")
+    import zombie
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    dt = 1 / 60.0
+    walker_cfg = config.ZOMBIE["types"]["walker"]
+    damage = walker_cfg["contact_damage"]
+    i_frames = walker_cfg["i_frame_duration"]
+
+    # Walker overlapping the player → one hit.
+    game.zombies = [{"x": game.player["x"], "y": game.player["y"],
+                     "vx": 0.0, "vy": 0.0, "hp": 30, "type": "walker"}]
+    zombie.update(game, dt)
+    check("Contact deals config damage",
+          game.player["hp"] == config.PLAYER["max_hp"] - damage)
+    check("Hit starts the i-frame window",
+          abs(game.player["invuln_timer"] - i_frames) < 1e-6)
+
+    # Still overlapping during i-frames → no further damage.
+    zombie.update(game, dt)
+    check("No damage while invulnerable",
+          game.player["hp"] == config.PLAYER["max_hp"] - damage)
+    check("I-frame timer decays",
+          abs(game.player["invuln_timer"] - (i_frames - dt)) < 1e-6)
+
+    # After the i-frame window expires, contact damages again.
+    game.player["invuln_timer"] = 0.0
+    zombie.update(game, dt)
+    check("Damage again after i-frames expire",
+          game.player["hp"] == config.PLAYER["max_hp"] - 2 * damage)
+
+    # A walker far away deals no damage.
+    game.player["hp"] = config.PLAYER["max_hp"]
+    game.player["invuln_timer"] = 0.0
+    game.zombies[0]["x"] = game.player["x"] + 500.0
+    game.zombies[0]["y"] = game.player["y"]
+    zombie.update(game, dt)
+    check("No damage when not in contact",
+          game.player["hp"] == config.PLAYER["max_hp"]
+          and game.player["invuln_timer"] == 0.0)
+
+    pygame.quit()
+
+
+def test_zombie_rendered():
+    """Walkers are rendered with their distinct config color."""
+    print("\n[zombie] Rendered with distinct color")
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    # Place a walker at a known on-screen position.
+    game.zombies = [{"x": 100.0, "y": 100.0, "vx": 0.0, "vy": 0.0,
+                     "hp": 30, "type": "walker"}]
+    game.render(screen)
+    color = pygame.Color(*config.ZOMBIE["types"]["walker"]["color"])
+    check("Walker pixel is drawn in its config color",
+          screen.get_at((100, 100)) == color)
+
+    pygame.quit()
+
+
 def test_menu_navigation():
     """Menu navigation works (Play starts a run, Quit exits)."""
     print("\n[menu] Menu navigation")
@@ -325,6 +468,10 @@ def main():
     test_player_facing()
     test_player_hp()
     test_player_rendered()
+    test_zombie_spawn()
+    test_zombie_seek()
+    test_zombie_contact_damage()
+    test_zombie_rendered()
     test_menu_navigation()
 
     print("\n" + "=" * 60)

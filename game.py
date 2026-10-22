@@ -88,7 +88,7 @@ class Game:
             # Per-frame order: input → player → zombie → weapon → projectile
             # → collision → XP → level-up → HUD → render
             player.update(self)
-            zombie.update(self)
+            zombie.update(self, dt)
             weapon.update(self)
             projectile.update(self)
             xp.update(self)
@@ -125,6 +125,12 @@ class Game:
     def _render_game(self, screen):
         """Render the game world."""
         screen.fill(config.RENDERER["background_color"])
+        # Zombies: pixel-art placeholder (small square in the type's color).
+        for z in self.zombies:
+            color = config.ZOMBIE["types"][z["type"]]["color"]
+            zx = int(z["x"])
+            zy = int(z["y"])
+            pygame.draw.rect(screen, color, (zx - 4, zy - 4, 8, 8))
         # Player: pixel-art placeholder (small square at its position).
         px = int(self.player["x"])
         py = int(self.player["y"])

@@ -23,12 +23,15 @@ PLAYER = {
 ZOMBIE = {
     "max_count": 1000,       # hard cap
     "spawn_ring_radius": 400,  # spawn just outside camera
+    "initial_spawn_count": 3,  # stub spawn (real spawn curve comes in T9)
     "types": {
         "walker": {
             "speed": 60.0,
             "hp": 30,
             "color": (100, 200, 100),
             "xp_drop": 1,
+            "contact_damage": 10,   # damage dealt on player contact
+            "i_frame_duration": 0.5,  # player i-frames after a hit (seconds)
         },
         "runner": {
             "speed": 150.0,
