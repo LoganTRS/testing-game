@@ -1,14 +1,15 @@
 """Renderer module — camera, sprite blits, screen shake.
 
-Scaffold: minimal stub. Full implementation in the renderer ticket.
+T10: the screen-shake timer decays each frame (triggered by the boss
+telegraph and other big hits).
 """
 import config
 
 
-def update(game):
+def update(game, dt=1 / 60.0):
     """Update renderer state. Called each frame."""
-    # Scaffold: no-op. Rendering added in the renderer ticket.
-    pass
+    if game.renderer["shake_timer"] > 0:
+        game.renderer["shake_timer"] = max(0.0, game.renderer["shake_timer"] - dt)
 
 
 def init(game):

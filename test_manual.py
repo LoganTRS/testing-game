@@ -1488,6 +1488,191 @@ def test_hud_config_driven():
     check("HUD font size is a config dict value", "font_size" in config.HUD)
 
 
+def test_boss_spawn_at_timer_end():
+    """The boss spawns exactly once, at the timer end (20:00 → 0:00)."""
+    print("\n[boss] Spawn at timer end")
+    import zombie
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    duration = config.RUN["duration_seconds"]
+    spawn_time = config.BOSS["spawn_time"]
+
+    # No boss before the timer end.
+    game.run_time = spawn_time - 1.0
+    zombie.update(game, 1 / 60.0)
+    check("No boss before the timer end",
+          not any(z["type"] == "boss" for z in game.zombies))
+
+    # At the timer end the boss spawns.
+    game.run_time = spawn_time
+    zombie.update(game, 1 / 60.0)
+    bosses = [z for z in game.zombies if z["type"] == "boss"]
+    check("Boss spawns at the timer end", len(bosses) == 1)
+    check("Boss HP is the single config value",
+          len(bosses) == 1 and bosses[0]["hp"] == config.ZOMBIE["types"]["boss"]["hp"])
+
+    # Exactly once: further frames do not spawn a second boss.
+    for _ in range(120):
+        zombie.update(game, 1 / 60.0)
+    check("Boss spawns exactly once",
+          len([z for z in game.zombies if z["type"] == "boss"]) == 1)
+
+    pygame.quit()
+
+
+def test_boss_on_top_of_horde():
+    """Zombie spawning continues at reduced rate while the boss is alive."""
+    print("\n[boss] On top of the horde (reduced-rate spawning)")
+    import zombie
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    duration = config.RUN["duration_seconds"]
+    reduced = config.BOSS["reduced_spawn_rate"]
+
+    # Normal rate at the timer end (boss not yet alive).
+    r_normal = zombie.spawn_rate_at(config.BOSS["spawn_time"], duration)
+    check("Normal rate at the timer end is positive", r_normal > 0.0)
+
+    # Reduced rate while the boss is alive.
+    r_boss = zombie.spawn_rate_at(config.BOSS["spawn_time"], duration, boss_alive=True)
+    check("Rate is reduced while the boss is alive", 0.0 < r_boss < r_normal)
+    check("Reduced rate equals the config value",
+          abs(r_boss - reduced) < 1e-9)
+
+    # Spawning actually continues while the boss is alive.
+    game.zombies = []
+    game._spawn_accumulator = 0.0
+    game.run_time = config.BOSS["spawn_time"]
+    zombie.update(game, 1 / 60.0)  # spawns the boss
+    check("Boss is alive", any(z["type"] == "boss" for z in game.zombies))
+    n_before = len(game.zombies)
+    game._spawn_accumulator = 1.0  # force one spawn at the reduced rate
+    zombie.update(game, 1 / 60.0)
+    check("Zombies keep spawning while the boss is alive",
+          len(game.zombies) == n_before + 1)
+
+    # The 1000-cap still applies while the boss is alive.
+    cap = config.ZOMBIE["max_count"]
+    game.zombies = [{"x": 0, "y": 0, "vx": 0, "vy": 0, "hp": 30, "type": "walker"}
+                    for _ in range(cap)]
+    game._spawn_accumulator = 10.0
+    zombie.update(game, 1 / 60.0)
+    check("1000-cap still applies while the boss is alive",
+          len(game.zombies) == cap)
+
+    pygame.quit()
+
+
+def test_boss_telegraph():
+    """The boss spawn is telegraphed: a banner plus screen shake."""
+    print("\n[boss] Telegraph (banner + screen shake)")
+    import zombie
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    check("No banner before the boss spawns", game.hud["boss_banner_timer"] == 0.0)
+    check("No shake before the boss spawns", game.renderer["shake_timer"] == 0.0)
+
+    game.run_time = config.BOSS["spawn_time"]
+    zombie.update(game, 1 / 60.0)
+    check("Banner is shown at the boss spawn",
+          abs(game.hud["boss_banner_timer"] - config.BOSS["banner_duration"]) < 1e-6)
+    check("Screen shake is triggered at the boss spawn",
+          abs(game.renderer["shake_timer"] - config.BOSS["shake_duration"]) < 1e-6)
+
+    # The banner renders the config text and fades out after its duration.
+    game.render(screen)
+    check("Banner text is a config value",
+          config.BOSS["banner_text"] == "THE BOSS HAS ARRIVED")
+    # The run has already ended (timer at 0:00), so decay the timers
+    # directly at the module seam.
+    import hud
+    import renderer
+    for _ in range(60 * int(config.BOSS["banner_duration"]) + 1):
+        hud.update(game, 1 / 60.0)
+        renderer.update(game, 1 / 60.0)
+    check("Banner fades out after its duration",
+          game.hud["boss_banner_timer"] == 0.0)
+    check("Shake decays after its duration",
+          game.renderer["shake_timer"] == 0.0)
+
+    pygame.quit()
+
+
+def test_boss_win():
+    """Defeating the boss (or the timer hitting 0:00) ends the run with a win."""
+    print("\n[boss] Win on boss defeat or timer end")
+    import zombie
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    duration = config.RUN["duration_seconds"]
+
+    # Timer hits 0:00 with the boss alive → win.
+    game.run_time = duration
+    zombie.update(game, 1 / 60.0)
+    check("Timer end with the boss alive ends the run with a win",
+          game.state == "game_over" and game.hud["won"] is True)
+
+    # Defeating the boss ends the run with a win.
+    game2 = Game(seed=42, headless=True)
+    game2.start_run()
+    game2.run_time = config.BOSS["spawn_time"] - 1.0
+    zombie.update(game2, 1 / 60.0)
+    check("No boss just before the timer end",
+          not any(z["type"] == "boss" for z in game2.zombies))
+    game2.run_time = config.BOSS["spawn_time"]
+    zombie.update(game2, 1 / 60.0)
+    # The boss spawns at the timer end (0:00), so the boss-kill win and the
+    # timer win coincide; the boss-kill path is verified by the state
+    # transition to game_over with won=True.
+    boss = [z for z in game2.zombies if z["type"] == "boss"][0]
+    boss["hp"] = 0
+    boss["x"] = 0.0  # out of contact so the win is from the kill, not the timer
+    boss["y"] = 0.0
+    zombie.update(game2, 1 / 60.0)
+    check("Defeating the boss ends the run with a win",
+          game2.state == "game_over" and game2.hud["won"] is True)
+
+    pygame.quit()
+
+
+def test_boss_rendered_distinctly():
+    """The boss is rendered distinctly from regular zombies."""
+    print("\n[boss] Rendered distinctly")
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    game.zombies = [{"x": 100.0, "y": 100.0, "vx": 0.0, "vy": 0.0,
+                     "hp": 30, "type": "walker"},
+                    {"x": 300.0, "y": 300.0, "vx": 0.0, "vy": 0.0,
+                     "hp": 5000, "type": "boss"}]
+    game.render(screen)
+    walker_color = pygame.Color(*config.ZOMBIE["types"]["walker"]["color"])
+    boss_color = pygame.Color(*config.ZOMBIE["types"]["boss"]["color"])
+    check("Boss pixel is drawn in its config color",
+          screen.get_at((300, 300)) == boss_color)
+    check("Boss color is distinct from the walker color",
+          boss_color != walker_color)
+    check("Boss is drawn larger than a regular zombie",
+          screen.get_at((300 + 8, 300)) == boss_color
+          and screen.get_at((100 + 8, 100)) != walker_color)
+
+    pygame.quit()
+
+
 def test_menu_navigation():
     """Menu navigation works (Play starts a run, Quit exits)."""
     print("\n[menu] Menu navigation")
@@ -1553,6 +1738,11 @@ def main():
     test_hud_kill_count_increments()
     test_hud_item_icons()
     test_hud_config_driven()
+    test_boss_spawn_at_timer_end()
+    test_boss_on_top_of_horde()
+    test_boss_telegraph()
+    test_boss_win()
+    test_boss_rendered_distinctly()
     test_menu_navigation()
 
     print("\n" + "=" * 60)

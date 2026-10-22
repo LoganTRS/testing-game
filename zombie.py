@@ -18,14 +18,17 @@ _GEM_DROPS = {
 }
 
 
-def spawn_rate_at(elapsed, duration, live_count=0):
+def spawn_rate_at(elapsed, duration, live_count=0, boss_alive=False):
     """Spawn rate (zombies/second) at `elapsed` seconds into a run.
 
     rate(t) = base_rate + ramp_rate * (t / duration) ** exponent,
     clamped to 0 once the live zombie count reaches the hard cap.
+    While the boss is alive (T10), the rate is the reduced config value.
     """
     if live_count >= config.ZOMBIE["max_count"]:
         return 0.0
+    if boss_alive:
+        return config.BOSS["reduced_spawn_rate"]
     t = min(max(elapsed, 0.0), duration)
     s = config.SPAWN
     return s["base_rate"] + s["ramp_rate"] * (t / duration) ** s["exponent"]
@@ -59,6 +62,26 @@ def _spawn_zombie(game, x, y, ztype):
     })
 
 
+def _boss_alive(game):
+    """T10: True if the boss is currently alive."""
+    return any(z["type"] == "boss" for z in game.zombies)
+
+
+def _spawn_boss(game):
+    """T10: spawn the boss exactly once, at the timer end, on top of the
+    horde, with a telegraph (banner + screen shake)."""
+    if game.run_time < config.BOSS["spawn_time"]:
+        return
+    if _boss_alive(game) or game._boss_spawned:
+        return
+    game._boss_spawned = True
+    _spawn_zombie(game, config.DISPLAY["width"] / 2,
+                  config.DISPLAY["height"] / 2, "boss")
+    # Telegraph: banner + screen shake.
+    game.hud["boss_banner_timer"] = config.BOSS["banner_duration"]
+    game.renderer["shake_timer"] = config.BOSS["shake_duration"]
+
+
 def _continuous_spawn(game, dt):
     """Accumulator-based continuous spawning from a ring just outside the camera.
 
@@ -66,6 +89,7 @@ def _continuous_spawn(game, dt):
     accumulator reaches 1.0, a zombie is spawned (type chosen from the
     current mix) and the accumulator is decremented. The 1000-zombie hard
     cap is enforced: no new zombies spawn once the cap is reached.
+    T10: while the boss is alive, the rate is the reduced config value.
     """
     duration = config.RUN["duration_seconds"]
     cap = config.ZOMBIE["max_count"]
@@ -76,7 +100,9 @@ def _continuous_spawn(game, dt):
     if len(game.zombies) >= cap:
         return
 
-    rate = spawn_rate_at(game.run_time, duration, live_count=len(game.zombies))
+    rate = spawn_rate_at(game.run_time, duration,
+                         live_count=len(game.zombies),
+                         boss_alive=_boss_alive(game))
     game._spawn_accumulator += rate * dt
 
     while game._spawn_accumulator >= 1.0 and len(game.zombies) < cap:
@@ -128,7 +154,10 @@ def _contact_damage(game, dt):
 
 
 def _kill_drops(game):
-    """Remove dead zombies, drop XP gems at their position, and count the kill."""
+    """Remove dead zombies, drop XP gems at their position, and count the kill.
+
+    T10: defeating the boss ends the run with a win.
+    """
     for z in list(game.zombies):
         if z["hp"] <= 0:
             game.zombies.remove(z)
@@ -136,17 +165,26 @@ def _kill_drops(game):
             for _ in range(_GEM_DROPS.get(z["type"], 1)):
                 game.xp["gems"].append({"x": z["x"], "y": z["y"],
                                         "vx": 0.0, "vy": 0.0})
+            if z["type"] == "boss":
+                game.state = "game_over"
+                game.hud["won"] = True
 
 
 def update(game, dt=1 / 60.0):
     """Update zombie state. Called each frame during a run."""
+    _spawn_boss(game)
     _continuous_spawn(game, dt)
     _seek_player(game, dt)
     _contact_damage(game, dt)
     _kill_drops(game)
+    # T10: the timer hitting 0:00 ends the run with a win.
+    if game.state == "playing" and game.run_time >= config.RUN["duration_seconds"]:
+        game.state = "game_over"
+        game.hud["won"] = True
 
 
 def init(game):
     """Initialize zombie state on game start."""
     game.zombies = []
     game._spawn_accumulator = 0.0
+    game._boss_spawned = False
