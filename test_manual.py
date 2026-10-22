@@ -11,6 +11,7 @@ Usage: python test_manual.py
 """
 import os
 import sys
+import math
 
 # Set up headless environment before importing pygame
 os.environ["SDL_VIDEODRIVER"] = "dummy"
@@ -32,6 +33,20 @@ def check(name, condition):
     else:
         FAIL += 1
         print(f"  FAIL: {name}")
+
+
+def set_keys(keys):
+    """Monkeypatch pygame.key.get_pressed to report the given keys as held.
+
+    pygame has no public API to inject key state headless, so we patch
+    get_pressed with a fake that answers from a set of key constants.
+    """
+    def get_pressed():
+        class K:
+            def __getitem__(self, k):
+                return k in keys
+        return K()
+    pygame.key.get_pressed = get_pressed
 
 
 def test_config_dicts():
@@ -127,6 +142,151 @@ def test_headless_loop():
     pygame.quit()
 
 
+def test_player_movement():
+    """Player moves 8-directionally via WASD and arrow keys, speed from config."""
+    print("\n[player] 8-directional movement")
+    import player
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    dt = 1 / 60.0
+    speed = config.PLAYER["speed"]
+
+    # No input → no movement
+    player.update(game)
+    check("No input → no movement", game.player["x"] == config.DISPLAY["width"] / 2
+          and game.player["y"] == config.DISPLAY["height"] / 2)
+
+    # Right (D)
+    game.player["x"] = config.DISPLAY["width"] / 2
+    game.player["y"] = config.DISPLAY["height"] / 2
+    set_keys([pygame.K_d])
+    player.update(game)
+    check("D moves right at config speed",
+          abs(game.player["x"] - (config.DISPLAY["width"] / 2 + speed * dt)) < 1e-6
+          and game.player["y"] == config.DISPLAY["height"] / 2)
+
+    # Up (W)
+    game.player["x"] = config.DISPLAY["width"] / 2
+    game.player["y"] = config.DISPLAY["height"] / 2
+    set_keys([pygame.K_w])
+    player.update(game)
+    check("W moves up at config speed",
+          abs(game.player["y"] - (config.DISPLAY["height"] / 2 - speed * dt)) < 1e-6
+          and game.player["x"] == config.DISPLAY["width"] / 2)
+
+    # Diagonal (W+D) — normalized, same total speed
+    game.player["x"] = config.DISPLAY["width"] / 2
+    game.player["y"] = config.DISPLAY["height"] / 2
+    set_keys([pygame.K_w, pygame.K_d])
+    player.update(game)
+    expected = speed * dt / math.sqrt(2)
+    check("W+D diagonal is normalized (same total speed)",
+          abs(game.player["x"] - (config.DISPLAY["width"] / 2 + expected)) < 1e-6
+          and abs(game.player["y"] - (config.DISPLAY["height"] / 2 - expected)) < 1e-6)
+
+    # Arrow keys
+    game.player["x"] = config.DISPLAY["width"] / 2
+    game.player["y"] = config.DISPLAY["height"] / 2
+    set_keys([pygame.K_LEFT])
+    player.update(game)
+    check("Left arrow moves left",
+          abs(game.player["x"] - (config.DISPLAY["width"] / 2 - speed * dt)) < 1e-6)
+
+    game.player["x"] = config.DISPLAY["width"] / 2
+    game.player["y"] = config.DISPLAY["height"] / 2
+    set_keys([pygame.K_DOWN])
+    player.update(game)
+    check("Down arrow moves down",
+          abs(game.player["y"] - (config.DISPLAY["height"] / 2 + speed * dt)) < 1e-6)
+
+    # Arrow + WASD diagonal
+    game.player["x"] = config.DISPLAY["width"] / 2
+    game.player["y"] = config.DISPLAY["height"] / 2
+    set_keys([pygame.K_UP, pygame.K_RIGHT])
+    player.update(game)
+    check("Up+Right arrow diagonal is normalized",
+          abs(game.player["x"] - (config.DISPLAY["width"] / 2 + expected)) < 1e-6
+          and abs(game.player["y"] - (config.DISPLAY["height"] / 2 - expected)) < 1e-6)
+
+    set_keys([])
+    pygame.quit()
+
+
+def test_player_facing():
+    """Player faces the nearest zombie; falls back to last-move direction."""
+    print("\n[player] Facing nearest zombie")
+    import player
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    # No zombies → facing falls back to last-move direction
+    game.player["x"] = config.DISPLAY["width"] / 2
+    game.player["y"] = config.DISPLAY["height"] / 2
+    set_keys([pygame.K_d])
+    player.update(game)
+    check("No zombies → faces last-move direction (right)",
+          game.player["facing"] == (1.0, 0.0))
+
+    # Release keys so the player stays put while we check zombie facing.
+    set_keys([])
+
+    # Zombie to the left → faces it
+    game.zombies = [{"x": game.player["x"] - 100.0, "y": game.player["y"]}]
+    player.update(game)
+    check("Faces nearest zombie (left)",
+          game.player["facing"] == (-1.0, 0.0))
+
+    # Two zombies: nearest is below
+    game.zombies = [
+        {"x": game.player["x"], "y": game.player["y"] + 50.0},
+        {"x": game.player["x"], "y": game.player["y"] - 200.0},
+    ]
+    player.update(game)
+    check("Faces the NEAREST zombie (below, not the farther one)",
+          game.player["facing"] == (0.0, 1.0))
+
+    set_keys([])
+    pygame.quit()
+
+
+def test_player_hp():
+    """Player HP exists as a dict value with a max."""
+    print("\n[player] HP")
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    check("HP is a dict value", isinstance(game.player["hp"], (int, float)))
+    check("HP starts at max", game.player["hp"] == config.PLAYER["max_hp"])
+    check("max_hp is a config dict value", "max_hp" in config.PLAYER)
+
+    pygame.quit()
+
+
+def test_player_rendered():
+    """Player is rendered (pixel-art placeholder) during a run."""
+    print("\n[player] Rendered")
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    game.render(screen)
+    # The player blit lands at the arena center (camera at 0,0 in scaffold).
+    px = int(game.player["x"])
+    py = int(game.player["y"])
+    check("Player pixel is drawn at its position",
+          screen.get_at((px, py)) != pygame.Color(*config.RENDERER["background_color"]))
+
+    pygame.quit()
+
+
 def test_menu_navigation():
     """Menu navigation works (Play starts a run, Quit exits)."""
     print("\n[menu] Menu navigation")
@@ -161,6 +321,10 @@ def main():
     test_game_construction()
     test_seeded_rng()
     test_headless_loop()
+    test_player_movement()
+    test_player_facing()
+    test_player_hp()
+    test_player_rendered()
     test_menu_navigation()
 
     print("\n" + "=" * 60)
