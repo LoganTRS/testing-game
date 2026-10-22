@@ -1,9 +1,10 @@
 """Zombie module — spawning, AI, contact damage.
 
-T3: walker zombie — stub spawn (fixed count), seek-the-player AI,
-contact damage with a short i-frame window. All stats from config.
-T6: zombie death drops XP gems (1 for normal types, a handful for
-elite/boss — stub, wired in T11).
+T3: walker zombie — seek-the-player AI, contact damage with a short
+i-frame window. T6: zombie death drops XP gems. T9: continuous spawning
+from a ring just outside the camera, super-linear rate ramp, 1000-zombie
+hard cap, and a type mix that shifts over the 20-minute run. All stats
+from config.
 """
 import math
 
@@ -17,33 +18,84 @@ _GEM_DROPS = {
 }
 
 
-def spawn_walker(game, x, y):
-    """Create a walker zombie at (x, y) and add it to the game."""
-    cfg = config.ZOMBIE["types"]["walker"]
+def spawn_rate_at(elapsed, duration, live_count=0):
+    """Spawn rate (zombies/second) at `elapsed` seconds into a run.
+
+    rate(t) = base_rate + ramp_rate * (t / duration) ** exponent,
+    clamped to 0 once the live zombie count reaches the hard cap.
+    """
+    if live_count >= config.ZOMBIE["max_count"]:
+        return 0.0
+    t = min(max(elapsed, 0.0), duration)
+    s = config.SPAWN
+    return s["base_rate"] + s["ramp_rate"] * (t / duration) ** s["exponent"]
+
+
+def type_mix_at(elapsed, duration):
+    """Normalized zombie type mix at `elapsed` seconds into a run.
+
+    Each type's weight is base + peak * exp(-((t - peak_time) / width) ** 2);
+    the weights are normalized to sum to 1.
+    """
+    t = min(max(elapsed, 0.0), duration)
+    weights = {}
+    for ztype, m in config.SPAWN["mix"].items():
+        d = (t - m["peak_time"]) / m["width"]
+        weights[ztype] = m["base"] + m["peak"] * math.exp(-d * d)
+    total = sum(weights.values())
+    return {ztype: w / total for ztype, w in weights.items()}
+
+
+def _spawn_zombie(game, x, y, ztype):
+    """Create a zombie of the given type at (x, y) and add it to the game."""
+    cfg = config.ZOMBIE["types"][ztype]
     game.zombies.append({
         "x": x,
         "y": y,
         "vx": 0.0,
         "vy": 0.0,
         "hp": cfg["hp"],
-        "type": "walker",
+        "type": ztype,
     })
 
 
-def _spawn_stub(game):
-    """Stub spawning: a small fixed count of walkers on the spawn ring.
+def _continuous_spawn(game, dt):
+    """Accumulator-based continuous spawning from a ring just outside the camera.
 
-    The real continuous spawn curve comes in T9.
+    Each frame, the spawn accumulator is advanced by rate * dt. When the
+    accumulator reaches 1.0, a zombie is spawned (type chosen from the
+    current mix) and the accumulator is decremented. The 1000-zombie hard
+    cap is enforced: no new zombies spawn once the cap is reached.
     """
-    count = config.ZOMBIE["initial_spawn_count"]
+    duration = config.RUN["duration_seconds"]
+    cap = config.ZOMBIE["max_count"]
     ring = config.ZOMBIE["spawn_ring_radius"]
     w = config.DISPLAY["width"]
     h = config.DISPLAY["height"]
-    for i in range(count):
+
+    if len(game.zombies) >= cap:
+        return
+
+    rate = spawn_rate_at(game.run_time, duration, live_count=len(game.zombies))
+    game._spawn_accumulator += rate * dt
+
+    while game._spawn_accumulator >= 1.0 and len(game.zombies) < cap:
+        game._spawn_accumulator -= 1.0
+        # Pick a type from the current mix.
+        mix = type_mix_at(game.run_time, duration)
+        r = game.rng.random()
+        cumulative = 0.0
+        chosen = "walker"
+        for ztype, weight in mix.items():
+            cumulative += weight
+            if r <= cumulative:
+                chosen = ztype
+                break
+        # Spawn on the ring at a random angle.
         angle = game.rng.uniform(0.0, 2.0 * math.pi)
         x = w / 2 + ring * math.cos(angle)
         y = h / 2 + ring * math.sin(angle)
-        spawn_walker(game, x, y)
+        _spawn_zombie(game, x, y, chosen)
 
 
 def _seek_player(game, dt):
@@ -88,6 +140,7 @@ def _kill_drops(game):
 
 def update(game, dt=1 / 60.0):
     """Update zombie state. Called each frame during a run."""
+    _continuous_spawn(game, dt)
     _seek_player(game, dt)
     _contact_damage(game, dt)
     _kill_drops(game)
@@ -96,4 +149,4 @@ def update(game, dt=1 / 60.0):
 def init(game):
     """Initialize zombie state on game start."""
     game.zombies = []
-    _spawn_stub(game)
+    game._spawn_accumulator = 0.0

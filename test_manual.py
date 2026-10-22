@@ -300,25 +300,96 @@ def test_player_rendered():
 
 
 def test_zombie_spawn():
-    """Stub spawning: a small fixed count of walkers spawns at run start."""
-    print("\n[zombie] Stub spawn")
+    """Continuous spawning: zombies spawn from the ring just outside the camera."""
+    print("\n[zombie] Continuous spawn")
     import zombie
     pygame.init()
     screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
     game = Game(seed=42, headless=True)
     game.start_run()
 
-    count = config.ZOMBIE["initial_spawn_count"]
-    check("Stub spawn count from config", len(game.zombies) == count)
-    check("All spawned zombies are walkers",
-          all(z["type"] == "walker" for z in game.zombies))
-    check("Walkers spawn with full HP from config",
-          all(z["hp"] == config.ZOMBIE["types"]["walker"]["hp"] for z in game.zombies))
-    check("Walkers spawn on the spawn ring (config radius from center)",
-          all(abs(math.hypot(z["x"] - config.DISPLAY["width"] / 2,
-                             z["y"] - config.DISPLAY["height"] / 2)
-                  - config.ZOMBIE["spawn_ring_radius"]) < 1e-6
-              for z in game.zombies))
+    # No zombies immediately after start (accumulator starts at 0).
+    check("No zombies immediately after start", len(game.zombies) == 0)
+
+    # Run enough frames to accumulate at least one spawn.
+    # At t=0, rate = base_rate = 0.5/s. At 60fps, dt = 1/60.
+    # After 120 frames (2 seconds), accumulator ≈ 0.5 * 2 = 1.0 → at least 1 spawn.
+    dt = 1 / 60.0
+    for _ in range(120):
+        game.update(dt)
+
+    check("Zombies spawned after 2 seconds", len(game.zombies) >= 1)
+    check("All zombies have valid types from config",
+          all(z["type"] in config.ZOMBIE["types"] for z in game.zombies))
+    check("All zombies have HP from config",
+          all(z["hp"] == config.ZOMBIE["types"][z["type"]]["hp"] for z in game.zombies))
+
+    # Verify spawn ring: spawn a zombie directly and check its position.
+    game.zombies = []
+    game._spawn_accumulator = 1.0  # force exactly one spawn
+    zombie.update(game, dt)
+    check("Spawned zombie is on the spawn ring",
+          len(game.zombies) == 1 and
+          abs(math.hypot(game.zombies[0]["x"] - config.DISPLAY["width"] / 2,
+                         game.zombies[0]["y"] - config.DISPLAY["height"] / 2)
+              - config.ZOMBIE["spawn_ring_radius"]) < 1.0)
+
+    # 1000-cap: no run exceeds the cap.
+    cap = config.ZOMBIE["max_count"]
+    game.zombies = [{"x": 0, "y": 0, "vx": 0, "vy": 0, "hp": 30, "type": "walker"}
+                    for _ in range(cap)]
+    game._spawn_accumulator = 10.0  # force accumulator above threshold
+    zombie.update(game, dt)
+    check("1000-cap: no new zombies spawn at the cap", len(game.zombies) == cap)
+
+    pygame.quit()
+
+
+def test_spawn_rate_curve():
+    """Spawn-rate curve: super-linear ramp, 1000-cap flattening, type-mix shift."""
+    print("\n[zombie] Spawn-rate curve (T9)")
+    import zombie
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    duration = config.RUN["duration_seconds"]
+    cap = config.ZOMBIE["max_count"]
+
+    # --- Rate curve: super-linear ramp ---
+    r0 = zombie.spawn_rate_at(0.0, duration)
+    r_mid = zombie.spawn_rate_at(duration / 2.0, duration)
+    r_end = zombie.spawn_rate_at(duration, duration)
+    check("Rate at t=0 equals base_rate",
+          abs(r0 - config.SPAWN["base_rate"]) < 1e-9)
+    check("Rate at t=20:00 equals base + ramp",
+          abs(r_end - (config.SPAWN["base_rate"] + config.SPAWN["ramp_rate"])) < 1e-9)
+    check("Rate is monotonically increasing", r0 < r_mid < r_end)
+    # Super-linear: the second half of the run adds more rate than the first half.
+    check("Ramp is super-linear (2nd half adds more rate than 1st half)",
+          (r_end - r_mid) > (r_mid - r0))
+
+    # --- 1000-cap flattening: rate is 0 at the cap ---
+    check("Rate flattens to 0 at the 1000-zombie cap",
+          zombie.spawn_rate_at(600.0, duration, live_count=cap) == 0.0)
+    check("Rate is positive just below the cap",
+          zombie.spawn_rate_at(600.0, duration, live_count=cap - 1) > 0.0)
+
+    # --- Type mix: continuous shift over the run ---
+    mix_early = zombie.type_mix_at(60.0, duration)
+    mix_mid = zombie.type_mix_at(600.0, duration)
+    mix_late = zombie.type_mix_at(1140.0, duration)
+    check("Mix weights sum to 1 (early)", abs(sum(mix_early.values()) - 1.0) < 1e-9)
+    check("Mix weights sum to 1 (mid)", abs(sum(mix_mid.values()) - 1.0) < 1e-9)
+    check("Mix weights sum to 1 (late)", abs(sum(mix_late.values()) - 1.0) < 1e-9)
+    check("100% walkers early (within tolerance)", abs(mix_early["walker"] - 1.0) < 1e-4)
+    check("Runners dominant at the midpoint",
+          mix_mid["runner"] > mix_mid["walker"] and mix_mid["runner"] > mix_mid["brute"])
+    check("Brutes dominate late",
+          mix_late["brute"] > mix_late["walker"] and mix_late["brute"] > mix_late["runner"])
+    check("Mix shifts continuously (no type is 0 at the midpoint)",
+          all(v > 0.0 for v in mix_mid.values()))
 
     pygame.quit()
 
@@ -1456,6 +1527,7 @@ def main():
     test_player_hp()
     test_player_rendered()
     test_zombie_spawn()
+    test_spawn_rate_curve()
     test_zombie_seek()
     test_zombie_contact_damage()
     test_zombie_rendered()
