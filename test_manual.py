@@ -12,6 +12,7 @@ Usage: python test_manual.py
 import os
 import sys
 import math
+import random
 
 # Set up headless environment before importing pygame
 os.environ["SDL_VIDEODRIVER"] = "dummy"
@@ -593,6 +594,61 @@ def test_projectile_travel_and_damage():
     pygame.quit()
 
 
+def test_xp_level_math():
+    """XP/level math: given a gem count + config, assert the resulting level
+    and whether a level-up fires."""
+    print("\n[xp] Level math (gem count + config → level, level-up fires)")
+    import xp
+
+    # Pure math: 0 XP → level 1, no level-up.
+    check("0 XP → level 1", xp.level_for_xp(0) == 1)
+    check("0 XP → no level-up pending", xp.level_ups_pending(0) == 0)
+
+    # Linear curve: level N needs N * xp_per_level XP.
+    per = config.XP["xp_per_level"]
+    check("xp_to_next_level(1) = xp_per_level", xp.xp_to_next_level(1) == per)
+    check("xp_to_next_level(2) = 2 * xp_per_level", xp.xp_to_next_level(2) == 2 * per)
+    check("xp_to_next_level(30) = 30 * xp_per_level", xp.xp_to_next_level(30) == 30 * per)
+
+    # Crossing the threshold fires exactly one level-up.
+    check("XP just below threshold → level 1", xp.level_for_xp(per - 1) == 1)
+    check("XP at threshold → level 2", xp.level_for_xp(per) == 2)
+    check("XP at threshold → 1 level-up pending", xp.level_ups_pending(per) == 1)
+
+    # Multiple levels in one batch (e.g. a boss gem dump).
+    # Cumulative XP to reach level 3: per + 2*per = 3*per.
+    check("XP at 3*per → level 3", xp.level_for_xp(3 * per) == 3)
+    check("XP at 3*per → 2 level-ups pending", xp.level_ups_pending(3 * per) == 2)
+
+    # Gem count + config → level (the ticket's exact seam).
+    gems = 3 * per  # 30 gems at gem_value 1
+    check("Gem count + config → level 3",
+          xp.level_for_xp(xp.xp_total(gems)) == 3)
+
+    # Curve is ~linear to ~level 30 by the 20-min mark (config values).
+    check("Level curve is linear (config)", config.XP["level_curve"] == "linear")
+    check("Max level ~30 (config)", config.XP["max_level"] == 30)
+    # Total XP to reach level 30: sum(1..29) * per = 435 * per.
+    check("XP to reach level 30 = 435 * xp_per_level",
+          xp.level_for_xp(435 * per - 1) == 29
+          and xp.level_for_xp(435 * per) == 30)
+
+    # At max level, no further level-ups fire.
+    check("XP past max level caps at max_level",
+          xp.level_for_xp(435 * per + 1000) == config.XP["max_level"])
+    check("No level-up pending at max level",
+          xp.level_ups_pending(435 * per + 1000, current_level=config.XP["max_level"]) == 0)
+
+    # Independent of game state (pure function of XP + config).
+    pygame.init()
+    game = Game(seed=42, headless=True)
+    game.start_run()
+    game.xp["level"] = 99
+    check("Pure: ignores existing game level state", xp.level_for_xp(per) == 2)
+
+    pygame.quit()
+
+
 def test_pistol_stats_from_config():
     """Pistol stats (fire rate, damage, projectile speed) are config dict values."""
     print("\n[config] Pistol stats are config dict values")
@@ -721,6 +777,117 @@ def test_xp_rendered():
     pygame.quit()
 
 
+def test_upgrade_option_pool():
+    """Upgrade pool: 4 categories, 3 options per pick, multiple picks at high levels."""
+    print("\n[upgrade] Option pool (4 categories, multiple picks at high levels)")
+    import upgrade
+
+    # The pool covers all 4 categories (config-driven).
+    pool = upgrade.option_pool()
+    categories = {opt["category"] for opt in pool}
+    check("Pool covers all 4 config categories",
+          categories == set(config.UPGRADE["categories"]))
+
+    # Every option has the fields the 3-card overlay needs.
+    check("Every option has icon, name, description",
+          all("icon" in o and "name" in o and "description" in o for o in pool))
+
+    # 3 options per pick (config), sampled from the pool.
+    rng = random.Random(42)
+    options = upgrade.roll_options(pool, rng)
+    check("roll_options returns options_per_levelup options",
+          len(options) == config.UPGRADE["options_per_levelup"])
+    check("Rolled options are distinct",
+          len({id(o) for o in options}) == len(options))
+
+    # Multiple picks are offered at high levels (per the ~level-30 curve).
+    check("Low level → 1 pick", upgrade.picks_for_level(2) == 1)
+    check("High level → multiple picks",
+          upgrade.picks_for_level(config.UPGRADE["max_level"]) > 1)
+    check("Picks grow with level",
+          upgrade.picks_for_level(config.UPGRADE["max_level"])
+          >= upgrade.picks_for_level(config.UPGRADE["multi_pick_level"]))
+
+    # Deterministic with a seeded rng.
+    o1 = upgrade.roll_options(pool, random.Random(7))
+    o2 = upgrade.roll_options(pool, random.Random(7))
+    check("Seeded rng → same roll", [o["name"] for o in o1] == [o["name"] for o in o2])
+
+
+def test_level_up_pause_and_pick():
+    """On level-up the run pauses and a 3-card overlay offers 3 options;
+    the player picks 1; 1 reroll is available."""
+    print("\n[upgrade] Level-up pause + 3-card pick + 1 reroll")
+    import upgrade
+
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    # No level-up at run start.
+    check("No level-up at run start", game.state == "playing"
+          and not game.upgrade["active"])
+
+    # Crossing the level threshold pauses the run and opens the overlay.
+    per = config.XP["xp_per_level"]
+    game.xp["current"] = per
+    game.update(1 / 60.0)
+    check("Level-up pauses the run", game.state == "level_up")
+    check("Overlay is active", game.upgrade["active"] is True)
+    check("Overlay shows 3 options",
+          len(game.upgrade["options"]) == config.UPGRADE["options_per_levelup"])
+    check("Each option has icon, name, description",
+          all("icon" in o and "name" in o and "description" in o
+              for o in game.upgrade["options"]))
+    check("1 reroll available",
+          game.upgrade["rerolls_left"] == config.UPGRADE["rerolls"])
+
+    # The overlay is rendered full-screen (cards drawn on the screen).
+    game.render(screen)
+    check("Level-up overlay renders (screen not just background)",
+          any(screen.get_at((x, y)) != pygame.Color(*config.RENDERER["background_color"])
+              for x in range(0, config.DISPLAY["width"], 40)
+              for y in range(0, config.DISPLAY["height"], 40)))
+
+    # Reroll: 1 reroll is available and re-rolls the options.
+    game.handle_level_up_reroll()
+    check("Reroll consumes the reroll",
+          game.upgrade["rerolls_left"] == config.UPGRADE["rerolls"] - 1)
+    check("Reroll re-rolls the 3 options",
+          len(game.upgrade["options"]) == config.UPGRADE["options_per_levelup"])
+    # No second reroll.
+    game.handle_level_up_reroll()
+    check("Only 1 reroll available",
+          game.upgrade["rerolls_left"] == 0)
+
+    # Pick 1 of 3: the level advances and the run resumes.
+    picked_name = game.upgrade["options"][1]["name"]
+    game.handle_level_up_pick(1)
+    check("Pick resumes the run", game.state == "playing")
+    check("Overlay is closed", game.upgrade["active"] is False)
+    check("Pick advances the level", game.xp["level"] == 2)
+    check("Picked option is recorded",
+          game.upgrade["picked"] == picked_name)
+
+    # Multiple level-ups in one batch → multiple picks offered.
+    # 60 XP from level 2 crosses the level-3 (30) and level-4 (60)
+    # thresholds, so 2 picks are offered.
+    game.xp["current"] = 6 * per  # 60 XP total (level 2 → 4)
+    game.update(1 / 60.0)
+    check("Batched level-ups open the overlay again", game.state == "level_up")
+    check("Multiple picks offered for batched level-ups",
+          game.upgrade["picks_left"] >= 2)
+    # Pick through them all → run resumes.
+    for _ in range(game.upgrade["picks_left"]):
+        game.handle_level_up_pick(0)
+    check("All picks consumed → run resumes",
+          game.state == "playing" and not game.upgrade["active"])
+    check("Level advanced by the batch", game.xp["level"] == 4)
+
+    pygame.quit()
+
+
 def test_menu_navigation():
     """Menu navigation works (Play starts a run, Quit exits)."""
     print("\n[menu] Menu navigation")
@@ -769,9 +936,12 @@ def main():
     test_projectile_travel_and_damage()
     test_pistol_stats_from_config()
     test_xp_math()
+    test_xp_level_math()
     test_xp_kill_drops_gem()
     test_xp_magnet_pickup()
     test_xp_rendered()
+    test_upgrade_option_pool()
+    test_level_up_pause_and_pick()
     test_menu_navigation()
 
     print("\n" + "=" * 60)
