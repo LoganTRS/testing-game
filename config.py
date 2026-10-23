@@ -24,6 +24,14 @@ ZOMBIE = {
     "max_count": 1000,       # hard cap
     "spawn_ring_radius": 400,  # spawn just outside camera
     "initial_spawn_count": 3,  # stub spawn (real spawn curve comes in T9)
+    # T11: multi-stage decay + death-sprite animation (distinct per type via
+    # the per-type color). Decay: the sprite darkens through `decay_stages`
+    # stages as HP drops (read the horde's health at a glance). Death-sprite:
+    # on a lethal hit the zombie plays a shrinking death sprite for
+    # `death_animation` seconds before being removed. `death_animation` > 0
+    # enables the animated death; 0 removes instantly (the legacy behavior).
+    "decay_stages": 4,
+    "death_animation": 0.0,
     "types": {
         "walker": {
             "speed": 60.0,
@@ -38,18 +46,24 @@ ZOMBIE = {
             "hp": 15,
             "color": (200, 200, 100),
             "xp_drop": 1,
+            "contact_damage": 8,
+            "i_frame_duration": 0.5,
         },
         "brute": {
             "speed": 40.0,
             "hp": 120,
             "color": (150, 100, 100),
             "xp_drop": 3,
+            "contact_damage": 20,
+            "i_frame_duration": 0.5,
         },
         "elite": {
             "speed": 80.0,
             "hp": 500,
             "color": (200, 100, 200),
             "xp_drop": 20,
+            "contact_damage": 20,
+            "i_frame_duration": 0.5,
         },
         "boss": {
             "speed": 50.0,
@@ -93,6 +107,20 @@ BOSS = {
     "banner_color": (255, 60, 60),
     "banner_font_size": 48,
     "shake_magnitude": 10,      # screen-shake pixels for the telegraph
+    "shake_duration": 0.5,      # seconds of screen shake for the telegraph
+}
+
+# --- Elite (T11: a single peak-threat moment near the run end) ---
+# The Elite zombie appears exactly once near the run end — a distinct
+# peak-threat beat BEFORE the boss spawns at the timer end (spec US13: two
+# distinct peak-threat moments). Like the boss, its spawn is telegraphed with
+# a banner and a screen shake.
+ELITE = {
+    "spawn_time": 1140.0,      # the 19:00 mark — 1 minute before the boss
+    "banner_text": "AN ELITE ZOMBIE APPROACHES",
+    "banner_duration": 3.0,     # seconds the banner stays on screen
+    "banner_color": (255, 120, 255),
+    "banner_font_size": 42,
     "shake_duration": 0.5,      # seconds of screen shake for the telegraph
 }
 

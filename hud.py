@@ -42,6 +42,9 @@ def update(game, dt=1 / 60.0):
     # T10: the boss telegraph banner counts down to nothing.
     if game.hud["boss_banner_timer"] > 0:
         game.hud["boss_banner_timer"] = max(0.0, game.hud["boss_banner_timer"] - dt)
+    # T11: the elite telegraph banner counts down to nothing.
+    if game.hud["elite_banner_timer"] > 0:
+        game.hud["elite_banner_timer"] = max(0.0, game.hud["elite_banner_timer"] - dt)
 
 
 def render(game, screen):
@@ -93,6 +96,13 @@ def render(game, screen):
                                     config.BOSS["banner_color"])
         screen.blit(banner, (config.DISPLAY["width"] // 2 - banner.get_width() // 2,
                              config.DISPLAY["height"] // 3))
+    # --- T11: elite telegraph banner ---
+    if game.hud["elite_banner_timer"] > 0:
+        banner_font = pygame.font.Font(None, config.ELITE["banner_font_size"])
+        banner = banner_font.render(config.ELITE["banner_text"], True,
+                                    config.ELITE["banner_color"])
+        screen.blit(banner, (config.DISPLAY["width"] // 2 - banner.get_width() // 2,
+                             config.DISPLAY["height"] // 3))
 
 
 def init(game):
@@ -101,5 +111,6 @@ def init(game):
         "kills": 0,
         "passives": [],
         "boss_banner_timer": 0.0,
+        "elite_banner_timer": 0.0,
         "won": False,
     }

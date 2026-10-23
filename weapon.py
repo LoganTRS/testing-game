@@ -9,6 +9,7 @@ and the config dicts, so they are unit-testable.
 import math
 
 import config
+import zombie
 
 
 def nearest_zombie(shooter_pos, zombies):
@@ -119,7 +120,9 @@ def _fire_whirlwind(game, cfg):
         if math.hypot(z["x"] - p["x"], z["y"] - p["y"]) <= radius:
             z["hp"] -= damage
             if z["hp"] <= 0:
-                game.zombies.remove(z)
+                zombie._begin_death(z, game)
+                if not z.get("dying"):
+                    game.zombies.remove(z)
 
 
 def update(game, dt=1 / 60.0):

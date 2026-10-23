@@ -8,10 +8,24 @@ an AoE on impact, damaging every zombie in the radius.
 import math
 
 import config
+import zombie
+
+
+def _lethal_hit(z, game):
+    """T11: after a damaging hit, begin the death animation (when enabled) or
+    remove the zombie if it is now dead. A dying zombie is not removed here —
+    `_death_animation` removes it when its timer expires."""
+    zombie._begin_death(z, game)
+    if z["hp"] <= 0 and not z.get("dying"):
+        game.zombies.remove(z)
 
 
 def _collide(game):
-    """Deal damage where projectiles overlap zombies; remove dead entities."""
+    """Deal damage where projectiles overlap zombies; remove dead entities.
+
+    T11: a lethal hit may begin the death-sprite animation (when enabled), in
+    which case the zombie is not removed immediately.
+    """
     for p in list(game.projectiles):
         for z in list(game.zombies):
             if p["x"] == z["x"] and p["y"] == z["y"]:
@@ -19,8 +33,7 @@ def _collide(game):
                     _explode(game, p)
                 else:
                     z["hp"] -= p["damage"]
-                    if z["hp"] <= 0:
-                        game.zombies.remove(z)
+                    _lethal_hit(z, game)
                     game.projectiles.remove(p)
                 break
 
@@ -31,8 +44,7 @@ def _explode(game, p):
     for z in list(game.zombies):
         if math.hypot(z["x"] - p["x"], z["y"] - p["y"]) <= radius:
             z["hp"] -= p["damage"]
-            if z["hp"] <= 0:
-                game.zombies.remove(z)
+            _lethal_hit(z, game)
     game.projectiles.remove(p)
 
 
