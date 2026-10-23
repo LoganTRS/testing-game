@@ -1559,14 +1559,20 @@ def test_boss_on_top_of_horde():
     check("Zombies keep spawning while the boss is alive",
           len(game.zombies) == n_before + 1)
 
-    # The 1000-cap still applies while the boss is alive.
+    # The 1000-cap still applies while the boss is alive. (_continuous_spawn
+    # counts the whole zombie list against the cap; the boss and the elite —
+    # which spawns a minute earlier, at T11's run-end mark — are present here
+    # and don't count toward the regular-horde cap, so count the regular
+    # (non-boss, non-elite) zombies only.)
     cap = config.ZOMBIE["max_count"]
     game.zombies = [{"x": 0, "y": 0, "vx": 0, "vy": 0, "hp": 30, "type": "walker"}
                     for _ in range(cap)]
     game._spawn_accumulator = 10.0
     zombie.update(game, 1 / 60.0)
+    regular = [z for z in game.zombies
+               if z["type"] not in ("boss", "elite")]
     check("1000-cap still applies while the boss is alive",
-          len(game.zombies) == cap)
+          len(regular) == cap)
 
     pygame.quit()
 
@@ -2052,6 +2058,210 @@ def test_best_run_saved_on_game_over():
     config.BEST_RUN["file"] = original_file
 
 
+def test_zombie_contact_damage_all_types():
+    """T11: all 4 types (walker, runner, brute, elite) deal contact damage
+    using their config values, with the shared i-frame window."""
+    print("\n[zombie] Contact damage shared across all 4 types (T11)")
+    import zombie
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+    dt = 1 / 60.0
+    for ztype in ("walker", "runner", "brute", "elite"):
+        cfg = config.ZOMBIE["types"][ztype]
+        game.zombies = [{"x": game.player["x"], "y": game.player["y"],
+                         "vx": 0.0, "vy": 0.0, "hp": cfg["hp"], "type": ztype}]
+        game.player["hp"] = config.PLAYER["max_hp"]
+        game.player["invuln_timer"] = 0.0
+        zombie.update(game, dt)
+        check(f"{ztype} deals its config contact damage",
+              game.player["hp"] == config.PLAYER["max_hp"] - cfg["contact_damage"])
+        check(f"{ztype} starts the i-frame window",
+              abs(game.player["invuln_timer"] - cfg["i_frame_duration"]) < 1e-6)
+    pygame.quit()
+
+
+def test_zombie_decay_stages_and_death_animation():
+    """T11: multi-stage decay (sprite darkens through stages as HP drops) and
+    the death-sprite animation (on a lethal hit the zombie plays a shrinking
+    sprite before removal, enabled via config ZOMBIE["death_animation"])."""
+    print("\n[zombie] Decay stages + death-sprite animation (T11)")
+    import zombie
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=7, headless=True)
+    game.start_run()
+
+    # --- Multi-stage decay: sprite darkens through stages as HP drops ---
+    z = {"type": "walker", "hp": config.ZOMBIE["types"]["walker"]["hp"]}
+    stages = config.ZOMBIE["decay_stages"]
+    base = config.ZOMBIE["types"]["walker"]["color"]
+    check("Stage 0 at full health", zombie.decay_stage(z) == 0)
+    check("Stage 0 color is the base color",
+          zombie.decay_color(base, 0) == tuple(base))
+    # A mid-health zombie is at a higher decay stage than a full-health one.
+    z_half = {"type": "walker", "hp": config.ZOMBIE["types"]["walker"]["hp"] // 2}
+    check("Decay stage increases as HP drops",
+          zombie.decay_stage(z_half) > zombie.decay_stage(z))
+    # The sprite color darkens (every channel <= base) as the stage increases.
+    top_stage = stages - 1
+    dark = zombie.decay_color(base, top_stage)
+    check("Decay color is darker than the base (every channel lower)",
+          all(dark[c] < base[c] for c in range(3)))
+    # (Rendering through the decay color is exercised by the roster test,
+    # which spawns real zombies and renders them.)
+
+    # --- Death-sprite animation (opt-in; default is instant removal) ---
+    check("Death animation is opt-in (default off)",
+          config.ZOMBIE["death_animation"] == 0.0)
+    z_live = {"type": "walker", "hp": 30, "dying": False, "death_timer": 0.0}
+    check("death_scale is 1.0 for a living zombie",
+          zombie.death_scale(z_live) == 1.0)
+
+    # Enable the animation for this test and re-init.
+    config.ZOMBIE["death_animation"] = 0.5
+    game2 = Game(seed=7, headless=True)
+    game2.start_run()
+    check("Death animation enabled when configured > 0",
+          game2._death_animation_enabled is True)
+
+    # A lethal hit (HP dropped to 0) begins the death-sprite animation, with
+    # no immediate removal.
+    wz = zombie._spawn_zombie(game2, config.DISPLAY["width"] / 2 + 500,
+                              config.DISPLAY["height"] / 2, "walker")
+    wz["hp"] = 0  # a lethal hit has dropped the HP to 0
+    zombie._begin_death(wz, game2)
+    check("Lethal hit begins the death animation", wz["dying"] is True)
+    check("Death timer starts at the config duration",
+          abs(wz["death_timer"] - 0.5) < 1e-9)
+    check("death_scale is ~1.0 just after the hit",
+          zombie.death_scale(wz) > 0.9)
+
+    # The sprite shrinks over the death-sprite window: capture the scale part-way
+    # through, before the window ends.
+    for _ in range(15):  # ~0.25s at 60fps — midway through the 0.5s window
+        zombie.update(game2, 1 / 60.0)
+    mid_scale = zombie.death_scale(wz)
+    check("Death sprite shrinks over time (mid-window scale < 1.0)",
+          0.0 <= mid_scale < 1.0)
+
+    # Run through the rest of the window; the zombie is removed on expiry.
+    for _ in range(20):
+        zombie.update(game2, 1 / 60.0)
+    check("Zombie removed after the death-sprite window",
+          wz not in game2.zombies)
+    # ...and its XP gem is dropped on removal.
+    check("XP gem dropped on death-removal", len(game2.xp["gems"]) >= 1)
+
+    # With the animation disabled, a lethal hit does NOT begin a death sprite
+    # (the zombie is removed by _kill_drops on the next update, not animated).
+    config.ZOMBIE["death_animation"] = 0.0
+    game3 = Game(seed=7, headless=True)
+    game3.start_run()
+    z3 = {"type": "walker", "hp": 30}
+    zombie._begin_death(z3, game3)
+    check("No death sprite when animation is disabled", z3.get("dying") is None)
+
+    # Restore the default.
+    config.ZOMBIE["death_animation"] = 0.0
+    pygame.quit()
+
+
+def test_zombie_roster_stats_and_distinct_color():
+    """T11: runner/brute are full zombie archetypes with config stats and a
+    distinct sprite color; they spawn into the horde and seek the player."""
+    print("\n[zombie] Runner/Brute roster stats + distinct color (T11)")
+    import zombie
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+
+    # Each non-boss type is a full archetype: speed, hp, distinct color,
+    # contact damage, and i-frame window (spec: runner/brute/elite are full
+    # archetypes, not stubs).
+    for t in ("runner", "brute", "elite"):
+        cfg = config.ZOMBIE["types"][t]
+        check(f"{t} has a config speed", cfg["speed"] > 0)
+        check(f"{t} has a config hp", cfg["hp"] > 0)
+        check(f"{t} has a contact damage", cfg["contact_damage"] > 0)
+        check(f"{t} has an i-frame window", cfg["i_frame_duration"] > 0)
+        check(f"{t} color is distinct from the walker",
+              cfg["color"] != config.ZOMBIE["types"]["walker"]["color"])
+        check(f"{t} color is distinct from the brute base set",
+              cfg["color"] != config.ZOMBIE["types"]["boss"]["color"])
+
+    # Runner is faster than the walker (the spec's signature distinction).
+    check("Runner is faster than the walker",
+          config.ZOMBIE["types"]["runner"]["speed"] > config.ZOMBIE["types"]["walker"]["speed"])
+    # Brute has more HP than the walker (the spec's signature distinction).
+    check("Brute has more HP than the walker",
+          config.ZOMBIE["types"]["brute"]["hp"] > config.ZOMBIE["types"]["walker"]["hp"])
+
+    # Spawn a runner and a brute directly; both seek the player and render
+    # with their distinct colors.
+    game = Game(seed=3, headless=True)
+    game.start_run()
+    runner = zombie._spawn_zombie(game, config.DISPLAY["width"] + 400,
+                                  config.DISPLAY["height"] / 2, "runner")
+    zombie._spawn_zombie(game, config.DISPLAY["width"] + 400,
+                         config.DISPLAY["height"] / 2 + 20, "brute")
+    rx0 = runner["x"]
+    zombie.update(game, 1 / 60.0)
+    check("Runner seeks the player (moves toward it)",
+          runner["x"] < rx0)
+    game.render(screen)  # renders with the distinct per-type color
+    check("Runner and brute are present in the horde",
+          any(z["type"] == "runner" for z in game.zombies)
+          and any(z["type"] == "brute" for z in game.zombies))
+
+    pygame.quit()
+
+
+def test_elite_spawns_once_at_run_end():
+    """T11: the Elite appears exactly once near the run end, distinct from
+    the boss (different spawn time, different type)."""
+    print("\n[zombie] Elite spawns once at run end (T11)")
+    import zombie
+    pygame.init()
+    screen = pygame.display.set_mode((config.DISPLAY["width"], config.DISPLAY["height"]))
+    game = Game(seed=42, headless=True)
+    game.start_run()
+
+    elite_time = config.ELITE["spawn_time"]
+    boss_time = config.BOSS["spawn_time"]
+    # The elite is a distinct peak-threat moment: it appears before the boss.
+    check("Elite spawn time is distinct from the boss (before it)",
+          elite_time < boss_time)
+
+    # No elite before its spawn time.
+    game.run_time = elite_time - 1.0
+    zombie.update(game, 1 / 60.0)
+    check("No elite before its spawn time",
+          not any(z["type"] == "elite" for z in game.zombies))
+
+    # At the elite's spawn time, exactly one elite appears.
+    game.run_time = elite_time
+    zombie.update(game, 1 / 60.0)
+    elites = [z for z in game.zombies if z["type"] == "elite"]
+    check("Elite spawns at its run-end time", len(elites) == 1)
+    check("Elite HP is the config value",
+          len(elites) == 1 and elites[0]["hp"] == config.ZOMBIE["types"]["elite"]["hp"])
+
+    # The elite spawn is telegraphed (banner + screen shake).
+    check("Elite banner is shown",
+          abs(game.hud["elite_banner_timer"] - config.ELITE["banner_duration"]) < 1e-6)
+    check("Elite screen shake is triggered",
+          abs(game.renderer["shake_timer"] - config.ELITE["shake_duration"]) < 1e-6)
+
+    # Exactly once: further frames do not spawn a second elite.
+    for _ in range(120):
+        zombie.update(game, 1 / 60.0)
+    check("Elite spawns exactly once",
+          len([z for z in game.zombies if z["type"] == "elite"]) == 1)
+
+    pygame.quit()
+
+
 def main():
     print("=" * 60)
     print("test_manual.py — Zombie Survival scaffold smoke test")
@@ -2097,6 +2307,10 @@ def main():
     test_boss_telegraph()
     test_boss_win()
     test_boss_rendered_distinctly()
+    test_zombie_contact_damage_all_types()
+    test_zombie_decay_stages_and_death_animation()
+    test_zombie_roster_stats_and_distinct_color()
+    test_elite_spawns_once_at_run_end()
     test_menu_navigation()
     test_sfx_config()
     test_sfx_module()

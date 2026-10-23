@@ -201,11 +201,18 @@ class Game:
         screen.fill(config.RENDERER["background_color"])
         # Zombies: pixel-art placeholder (small square in the type's color).
         # T10: the boss is drawn distinctly larger than a regular zombie.
+        # T11: the sprite darkens through decay stages as HP drops, and a
+        # dying zombie plays a shrinking death sprite (when the animation is
+        # enabled via config).
         for z in self.zombies:
-            color = config.ZOMBIE["types"][z["type"]]["color"]
+            base = config.ZOMBIE["types"][z["type"]]["color"]
+            stage = zombie.decay_stage(z)
+            color = zombie.decay_color(base, stage)
+            scale = zombie.death_scale(z)
+            half = 12 if z["type"] == "boss" else 4
+            half = max(1, int(half * scale))
             zx = int(z["x"])
             zy = int(z["y"])
-            half = 12 if z["type"] == "boss" else 4
             pygame.draw.rect(screen, color, (zx - half, zy - half,
                                              half * 2, half * 2))
         # XP gems: pixel-art placeholder (small square in the config color).
